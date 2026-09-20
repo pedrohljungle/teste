@@ -61,6 +61,11 @@ lint: ## Run golangci-lint, which is what enforces the layer rules
 	golangci-lint run ./...
 	golangci-lint run --build-tags e2e ./app/test/...
 
+# Needs the swag CLI at the version go.mod pins:
+#   go install github.com/swaggo/swag/cmd/swag@v1.16.6
+docs: ## Regenerate the API documentation in app/docs
+	swag init -g app/cmd/server/main.go -o app/docs
+
 tidy: ## Tidy go.mod
 	go mod tidy
 

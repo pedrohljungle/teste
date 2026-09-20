@@ -171,14 +171,18 @@ func (v *Verifier) Verify(ctx context.Context, rawToken string) (principal struc
 		Username: claims.Username,
 		Email:    claims.Email,
 		Roles:    claims.roles(),
+		// A token without the claim leaves this empty, which is what an internal service or a
+		// person looks like: none of them acts for a provider.
+		ProviderID: claims.ProviderID,
 	}, nil
 }
 
 // keycloakClaims mirrors how Keycloak lays out an access token. It is adapter-shaped on
 // purpose: the rest of the system only ever sees structs.Principal.
 type keycloakClaims struct {
-	Username string `json:"preferred_username"`
-	Email    string `json:"email"`
+	Username   string `json:"preferred_username"`
+	Email      string `json:"email"`
+	ProviderID string `json:"provider_id"`
 
 	RealmAccess struct {
 		Roles []string `json:"roles"`

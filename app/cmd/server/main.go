@@ -26,12 +26,14 @@ import (
 	"github.com/estrategiahq/pedro-test/app/src/handlers"
 	"github.com/estrategiahq/pedro-test/app/src/handlers/health"
 	"github.com/estrategiahq/pedro-test/app/src/handlers/identity"
+	wallethandler "github.com/estrategiahq/pedro-test/app/src/handlers/wallet"
 	"github.com/estrategiahq/pedro-test/app/src/libs/appinfo"
 	"github.com/estrategiahq/pedro-test/app/src/libs/auth"
 	"github.com/estrategiahq/pedro-test/app/src/libs/bootstrap"
 	"github.com/estrategiahq/pedro-test/app/src/libs/config"
 	"github.com/estrategiahq/pedro-test/app/src/libs/middleware"
 	"github.com/estrategiahq/pedro-test/app/src/libs/observability"
+	"github.com/estrategiahq/pedro-test/app/src/structs"
 )
 
 // version is injected at build time with -ldflags and becomes service.version.
@@ -39,7 +41,7 @@ var version = "dev"
 
 //	@title			pedro-test
 //	@version		1.0
-//	@description	Tarefas criadas pela API e concluídas por um worker.
+//	@description	Carteiras de jogadores e operações de provedores de jogos: apostas, prêmios, derrotas, estornos e reversões.
 //	@BasePath		/
 //
 //	@securityDefinitions.oauth2.password	OAuth2Password
@@ -115,16 +117,19 @@ type routeParams struct {
 	Auth     *middleware.Auth
 	Health   *health.Handler
 	Identity *identity.Handler
+	Wallet   *wallethandler.Handler
 }
 
 // serverRoutes is the map of what this process serves. Each domain registers itself and names,
 // on each route, the middlewares that route requires.
 //
-// health and identity are all there is today: they are the two routes any service has
-// regardless of what it does.
+// health and identity are the two routes any service has regardless of what it does; the wallet
+// is the first domain, and it is reserved to the internal service role.
 func serverRoutes(p routeParams) {
 	health.ServerRoutes(p.Echo, p.Health)
 	identity.ServerRoutes(p.Echo, p.Identity, p.Auth.RequireAuthentication)
+	wallethandler.ServerRoutes(p.Echo, p.Wallet,
+		p.Auth.RequireAuthentication, p.Auth.RequireRealmRole(structs.RoleInternalService))
 
 	// A domain registers itself in one line:
 	//

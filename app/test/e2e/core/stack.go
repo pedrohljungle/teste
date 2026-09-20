@@ -17,6 +17,7 @@ import (
 	"github.com/estrategiahq/pedro-test/app/src/handlers"
 	"github.com/estrategiahq/pedro-test/app/src/handlers/health"
 	"github.com/estrategiahq/pedro-test/app/src/handlers/identity"
+	wallethandler "github.com/estrategiahq/pedro-test/app/src/handlers/wallet"
 	outboxiface "github.com/estrategiahq/pedro-test/app/src/interfaces/outbox"
 	persistenceiface "github.com/estrategiahq/pedro-test/app/src/interfaces/persistence"
 	wageringiface "github.com/estrategiahq/pedro-test/app/src/interfaces/wagering"
@@ -28,6 +29,7 @@ import (
 	"github.com/estrategiahq/pedro-test/app/src/libs/jobrunner"
 	"github.com/estrategiahq/pedro-test/app/src/libs/middleware"
 	"github.com/estrategiahq/pedro-test/app/src/repositories/queue"
+	"github.com/estrategiahq/pedro-test/app/src/structs"
 )
 
 // Stack is the running application under test: the server and the worker in one process,
@@ -183,6 +185,7 @@ func newEcho(telemetry *middleware.Telemetry) *echo.Echo {
 	e.HidePort = true
 	e.Validator = &requestValidator{validate: validator.New()}
 	e.Use(echomiddleware.Recover())
+	e.Use(echomiddleware.RequestID())
 	e.Use(telemetry.TraceRequest)
 	return e
 }
@@ -195,6 +198,7 @@ type routeParams struct {
 	Auth     *middleware.Auth
 	Health   *health.Handler
 	Identity *identity.Handler
+	Wallet   *wallethandler.Handler
 }
 
 // serverRoutes mirrors cmd/server: the same ServerRoutes functions, the same middlewares on the
@@ -203,6 +207,8 @@ type routeParams struct {
 func serverRoutes(p routeParams) {
 	health.ServerRoutes(p.Echo, p.Health)
 	identity.ServerRoutes(p.Echo, p.Identity, p.Auth.RequireAuthentication)
+	wallethandler.ServerRoutes(p.Echo, p.Wallet,
+		p.Auth.RequireAuthentication, p.Auth.RequireRealmRole(structs.RoleInternalService))
 
 	docsRoutes(p.Echo, p.Config)
 }

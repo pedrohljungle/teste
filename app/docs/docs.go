@@ -65,6 +65,75 @@ const docTemplate = `{
                     }
                 }
             }
+        },
+        "/wallets": {
+            "post": {
+                "security": [
+                    {
+                        "OAuth2Password": []
+                    }
+                ],
+                "description": "Cria a carteira na moeda do saldo inicial. Com saldo positivo, cria também a transação OPENING, o crédito no ledger e os eventos, no mesmo commit. Com saldo zero, cria só a carteira. Restrita ao serviço interno.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "wallets"
+                ],
+                "summary": "Abre a carteira de um jogador",
+                "parameters": [
+                    {
+                        "description": "Jogador e saldo inicial",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/wallet.OpenRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "$ref": "#/definitions/wallet.Response"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/structs.APIError"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "$ref": "#/definitions/structs.APIError"
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "$ref": "#/definitions/structs.APIError"
+                        }
+                    },
+                    "409": {
+                        "description": "Conflict",
+                        "schema": {
+                            "$ref": "#/definitions/structs.APIError"
+                        }
+                    },
+                    "503": {
+                        "description": "Service Unavailable",
+                        "schema": {
+                            "$ref": "#/definitions/structs.APIError"
+                        }
+                    }
+                }
+            }
         }
     },
     "definitions": {
@@ -92,9 +161,27 @@ const docTemplate = `{
         "structs.APIError": {
             "type": "object",
             "properties": {
+                "failureCode": {
+                    "description": "FailureCode is the stable, documented reason of a business rejection or of an invalid\noperation. It is what a provider reads to tell an input it can correct from a definitive\noutcome, and it is absent on errors that are not about the operation itself.",
+                    "type": "string",
+                    "example": "INSUFFICIENT_FUNDS"
+                },
                 "message": {
                     "type": "string",
                     "example": "invalid token"
+                }
+            }
+        },
+        "structs.MoneyDTO": {
+            "type": "object",
+            "properties": {
+                "amount": {
+                    "type": "string",
+                    "example": "25.00"
+                },
+                "currency": {
+                    "type": "string",
+                    "example": "BRL"
                 }
             }
         },
@@ -102,6 +189,10 @@ const docTemplate = `{
             "type": "object",
             "properties": {
                 "email": {
+                    "type": "string"
+                },
+                "provider_id": {
+                    "description": "ProviderID is the provider this identity acts as, from the provider_id claim of its\ntoken. It is empty for anyone that is not a provider. The provider a request may act for\ncomes from here and never from what the request says about itself.",
                     "type": "string"
                 },
                 "roles": {
@@ -115,6 +206,38 @@ const docTemplate = `{
                 },
                 "username": {
                     "type": "string"
+                }
+            }
+        },
+        "wallet.OpenRequest": {
+            "type": "object",
+            "properties": {
+                "initialBalance": {
+                    "$ref": "#/definitions/structs.MoneyDTO"
+                },
+                "playerId": {
+                    "type": "string",
+                    "example": "0192f28f-5dc0-7d58-bdb2-814ad6a0f4a1"
+                }
+            }
+        },
+        "wallet.Response": {
+            "type": "object",
+            "properties": {
+                "balance": {
+                    "$ref": "#/definitions/structs.MoneyDTO"
+                },
+                "id": {
+                    "type": "string",
+                    "example": "0192f291-27dd-7d3f-8071-5f8685deef37"
+                },
+                "playerId": {
+                    "type": "string",
+                    "example": "0192f28f-5dc0-7d58-bdb2-814ad6a0f4a1"
+                },
+                "version": {
+                    "type": "integer",
+                    "example": 1
                 }
             }
         }
@@ -138,7 +261,7 @@ var SwaggerInfo = &swag.Spec{
 	BasePath:         "/",
 	Schemes:          []string{},
 	Title:            "pedro-test",
-	Description:      "Tarefas criadas pela API e concluídas por um worker.",
+	Description:      "Carteiras de jogadores e operações de provedores de jogos: apostas, prêmios, derrotas, estornos e reversões.",
 	InfoInstanceName: "swagger",
 	SwaggerTemplate:  docTemplate,
 	LeftDelim:        "{{",

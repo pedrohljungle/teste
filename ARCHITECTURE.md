@@ -1353,6 +1353,30 @@ configuração do IDP, não fazer deploy.
 - **Autorização de borda no handler; autorização que olha o dado no service.**
   `RequireRealmRole("vendas")` é borda. "Só o dono pode fechar o pedido" seria regra de negócio.
 
+### O modelo de autorização do domínio
+
+A identidade autenticada decide **quem o chamador é**; a rota decide **o que ele pode tocar**.
+São dois papéis de realm, e nenhuma pessoa nem serviço tem os dois:
+
+| Identidade (realm `pedro-test`) | Papel | `provider_id` no token | Pode |
+|---|---|---|---|
+| `pedro-test-wallet-service` | `internal_service` | — | abrir carteira, ler carteira e ledger, reconciliar |
+| `provider-a`, `provider-b` | `provider` | claim fixa `provider-a` / `provider-b` | enviar operações e ler **as próprias** transações |
+| `pedro-test-short-lived` | `internal_service` | — | só existe nos testes: token de 1 segundo, para provar a rejeição de um token **assinado e expirado** |
+| `pedro-test-worker` | — | — | consumir a fila (a autorização do broker é da fila, ver §9) |
+
+Todas são contas de máquina, autenticadas por `client_credentials`. A escolha do Keycloak, a
+validação offline por JWKS e RS256 fixado estão acima; o que este domínio acrescenta é:
+
+- **O provedor autorizado vem do token, nunca do corpo.** O `provider_id` é uma claim
+  fixada pelo realm no cliente do provedor (`oidc-hardcoded-claim-mapper`), lida para
+  `structs.Principal.ProviderID`. Um provedor não escolhe quem é.
+- **A rota declara o papel** (`RequireRealmRole("internal_service")`), como qualquer autorização
+  de borda. A regra que precisa olhar o dado — "este provedor só lê as próprias transações" — é
+  do service, porque depende do registro e não do token.
+- **Sem token, token adulterado, token expirado ou papel errado: nenhum efeito.** Os cenários
+  conferem o banco depois (carteira, transação, ledger e evento), não só o status da resposta.
+
 ---
 
 ## 9. Fila: SQS com ack explícito

@@ -17,13 +17,35 @@ definitions:
     type: object
   structs.APIError:
     properties:
+      failureCode:
+        description: |-
+          FailureCode is the stable, documented reason of a business rejection or of an invalid
+          operation. It is what a provider reads to tell an input it can correct from a definitive
+          outcome, and it is absent on errors that are not about the operation itself.
+        example: INSUFFICIENT_FUNDS
+        type: string
       message:
         example: invalid token
+        type: string
+    type: object
+  structs.MoneyDTO:
+    properties:
+      amount:
+        example: "25.00"
+        type: string
+      currency:
+        example: BRL
         type: string
     type: object
   structs.Principal:
     properties:
       email:
+        type: string
+      provider_id:
+        description: |-
+          ProviderID is the provider this identity acts as, from the provider_id claim of its
+          token. It is empty for anyone that is not a provider. The provider a request may act for
+          comes from here and never from what the request says about itself.
         type: string
       roles:
         items:
@@ -34,9 +56,32 @@ definitions:
       username:
         type: string
     type: object
+  wallet.OpenRequest:
+    properties:
+      initialBalance:
+        $ref: '#/definitions/structs.MoneyDTO'
+      playerId:
+        example: 0192f28f-5dc0-7d58-bdb2-814ad6a0f4a1
+        type: string
+    type: object
+  wallet.Response:
+    properties:
+      balance:
+        $ref: '#/definitions/structs.MoneyDTO'
+      id:
+        example: 0192f291-27dd-7d3f-8071-5f8685deef37
+        type: string
+      playerId:
+        example: 0192f28f-5dc0-7d58-bdb2-814ad6a0f4a1
+        type: string
+      version:
+        example: 1
+        type: integer
+    type: object
 info:
   contact: {}
-  description: Tarefas criadas pela API e concluídas por um worker.
+  description: 'Carteiras de jogadores e operações de provedores de jogos: apostas,
+    prêmios, derrotas, estornos e reversões.'
   title: pedro-test
   version: "1.0"
 paths:
@@ -74,6 +119,52 @@ paths:
       summary: Quem sou eu
       tags:
       - identity
+  /wallets:
+    post:
+      consumes:
+      - application/json
+      description: Cria a carteira na moeda do saldo inicial. Com saldo positivo,
+        cria também a transação OPENING, o crédito no ledger e os eventos, no mesmo
+        commit. Com saldo zero, cria só a carteira. Restrita ao serviço interno.
+      parameters:
+      - description: Jogador e saldo inicial
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/wallet.OpenRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/wallet.Response'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/structs.APIError'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/structs.APIError'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/structs.APIError'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/structs.APIError'
+        "503":
+          description: Service Unavailable
+          schema:
+            $ref: '#/definitions/structs.APIError'
+      security:
+      - OAuth2Password: []
+      summary: Abre a carteira de um jogador
+      tags:
+      - wallets
 securityDefinitions:
   OAuth2Password:
     flow: password
