@@ -1,0 +1,197 @@
+# Local stack: both entrypoints plus everything they depend on.
+#
+# server and worker share the same build and differ only in the ENTRYPOINT argument, which is
+# the packaging counterpart of what the two mains do in the code.
+
+name: pedro-test
+
+x-app-env: &app-env
+  APP_ENV: development
+  DATABASE_URL: postgres://postgres:postgres@postgres:5432/pedro_test?sslmode=disable
+  REDIS_URL: redis://redis:6379/0
+  # Issuer is the external address, the one inside the token you fetch from your machine.
+  # InternalURL is how the container reaches Keycloak. They are different addresses for the
+  # same realm, and mixing them up is the usual cause of "issuer mismatch".
+  KEYCLOAK_ISSUER: http://localhost:8080/realms/pedro-test
+  KEYCLOAK_INTERNAL_URL: http://keycloak:8080/realms/pedro-test
+  KEYCLOAK_AUDIENCE: pedro-test-api
+  AWS_REGION: us-east-1
+  AWS_ENDPOINT_URL: http://localstack:4566
+  AWS_ACCESS_KEY_ID: test
+  AWS_SECRET_ACCESS_KEY: test
+  SQS_QUEUE_URL: http://localstack:4566/000000000000/pedro-test-tasks
+  # The application speaks OTLP straight to the observability backend: no collector in
+  # between.
+  OTEL_EXPORTER_OTLP_ENDPOINT: observability:4317
+  OTEL_TRACES_SAMPLER_ARG: "1.0"
+  # Curto em dev: 60s (o padrão do SDK) é tempo demais para quem está olhando o painel.
+  OTEL_METRIC_EXPORT_INTERVAL: 15s
+  # Documentação ligada em dev. Em produção fica desligada: a rota nem é registrada.
+  DOCS_ENABLED: "true"
+
+services:
+  server:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+      args:
+        ENTRYPOINT: server
+        VERSION: local
+    ports:
+      - "3000:3000"
+    environment:
+      <<: *app-env
+      PORT: "3000"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+      localstack:
+        condition: service_healthy
+      # The server loads the realm metadata during boot, so Keycloak has to be ready.
+      keycloak:
+        condition: service_healthy
+      observability:
+        condition: service_started
+    restart: unless-stopped
+
+  worker:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+      args:
+        ENTRYPOINT: worker
+        VERSION: local
+    ports:
+      # The worker serves its own probe, on the same port inside its own container.
+      - "3010:3000"
+    environment:
+      <<: *app-env
+      PORT: "3000"
+      # Worker only: it authenticates as a machine.
+      KEYCLOAK_CLIENT_ID: pedro-test-worker
+      KEYCLOAK_CLIENT_SECRET: worker-secret-local
+      WORKER_POLL_TIMEOUT: 20s
+      WORKER_VISIBILITY_TIMEOUT: "60"
+      WORKER_CONCURRENCY: "4"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+      localstack:
+        condition: service_healthy
+      keycloak:
+        condition: service_healthy
+      observability:
+        condition: service_started
+    restart: unless-stopped
+
+  # goose CLI, run once. server and worker only start after it succeeds, which removes the
+  # race between "the app is up" and "the schema exists".
+  migrate:
+    build:
+      context: .
+      dockerfile: docker/goose.Dockerfile
+    command: ["up"]
+    environment:
+      GOOSE_DRIVER: postgres
+      GOOSE_DBSTRING: postgres://postgres:postgres@postgres:5432/pedro_test?sslmode=disable
+      GOOSE_MIGRATION_DIR: /migrations
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  postgres:
+    image: postgres:18-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: pedro_test
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d pedro_test"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    volumes:
+      # postgres:18+ expects a single mount at /var/lib/postgresql, not at the data
+      # subdirectory: mounting the old path makes the image refuse to start.
+      - pgdata:/var/lib/postgresql
+
+  # Redis backs the listing cache. The job queue lives in SQS.
+  redis:
+    image: redis:8-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # SQS locally. The init script creates the queue and its dead letter queue, so the
+  # application never needs permission to create its own infrastructure.
+  localstack:
+    image: localstack/localstack:3.7
+    environment:
+      SERVICES: sqs
+      DEFAULT_REGION: us-east-1
+    ports:
+      - "4566:4566"
+    volumes:
+      - ./docker/localstack:/etc/localstack/init/ready.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "awslocal sqs get-queue-url --queue-name pedro-test-tasks || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.7
+    command: ["start-dev", "--import-realm"]
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: admin
+      # Pinning the hostname keeps the token iss stable instead of varying with the request
+      # Host header.
+      KC_HOSTNAME: http://localhost:8080
+      KC_HOSTNAME_STRICT: "false"
+      KC_HTTP_ENABLED: "true"
+      KC_HEALTH_ENABLED: "true"
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./docker/keycloak:/opt/keycloak/data/import:ro
+    healthcheck:
+      # The Keycloak image ships neither curl nor wget, so bash /dev/tcp is the way to probe
+      # it without installing anything.
+      test:
+        [
+          "CMD-SHELL",
+          "exec 3<>/dev/tcp/127.0.0.1/9000 && echo -e 'GET /health/ready HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n' >&3 && cat <&3 | grep -q 'UP'",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+
+  # Grafana OTel LGTM: OTLP ingest, storage and UI in one container. The applications export
+  # to it directly, so there is no collector to configure or keep running.
+  observability:
+    image: grafana/otel-lgtm:0.33.1
+    environment:
+      ENABLE_LOGS_OTELCOL: "true"
+    ports:
+      - "3001:3000" # Grafana UI (3000 is taken by the server)
+      - "4317:4317" # OTLP gRPC
+      - "4318:4318" # OTLP HTTP
+    volumes:
+      - grafana:/data
+
+volumes:
+  pgdata:
+  grafana:

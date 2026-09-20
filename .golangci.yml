@@ -1,0 +1,232 @@
+# golangci-lint configuration, v2 schema.
+#
+# depguard is what makes the layer rules mechanical instead of agreed upon. Every
+# architectural rule in this project is an import rule:
+#
+#   interfaces     the contracts of each domain. Leaf: the three layers point here, and here
+#                  points at nothing but entities and structs.
+#   handlers       take a request, call a service, answer. No storage, no business rule.
+#   services       the business rules. Talk to the world only through the contracts.
+#   repositories   the adapters: the only packages that know pgx, Redis or an SDK.
+#   entities       mirror the tables. Leaf: they know no layer.
+#   structs        DTOs that cross layers. Leaf, and data only.
+#   libs/          everything that is not a layer: config, telemetry, pools, IDP, runtimes.
+#   libs/observability  the only package that knows zap and the OpenTelemetry SDK.
+#
+# What depguard cannot catch is a business rule hand-written inside a handler, with no import
+# at all. cyclop, scoped to the handler path, is the mechanical proxy for that.
+version: "2"
+
+run:
+  timeout: 3m
+
+linters:
+  enable:
+    - depguard
+    - errcheck
+    - errorlint
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+    - misspell
+    - cyclop
+    - bodyclose
+    - noctx
+
+  settings:
+    errorlint:
+      # Errors are matched with errors.Is/errors.As and wrapped with %w, never compared with
+      # == nor inspected by message.
+      errorf: true
+      asserts: true
+      comparison: true
+
+    cyclop:
+      # Handlers only, see exclusions. A handler above the limit is a handler that grew a
+      # business rule, and the fix is to move it into a service. The limit deliberately does
+      # not apply to services: that is where rules belong.
+      max-complexity: 8
+
+    depguard:
+      rules:
+        one-error-library:
+          files:
+            - "$all"
+          deny:
+            - pkg: "github.com/pkg/errors"
+              desc: "Use the standard errors package: errors.New/Is/As and fmt.Errorf with %w."
+
+        interfaces-are-leaves:
+          files:
+            - "**/app/src/interfaces/**"
+          deny:
+            - pkg: "github.com/estrategiahq/pedro-test/app/src/handlers"
+              desc: "interfaces/ is a leaf: it is what the layers point at, never the other way round."
+            - pkg: "github.com/estrategiahq/pedro-test/app/src/services"
+              desc: "interfaces/ is a leaf."
+            - pkg: "github.com/estrategiahq/pedro-test/app/src/repositories"
+              desc: "interfaces/ is a leaf."
+            - pkg: "github.com/estrategiahq/pedro-test/app/src/libs"
+              desc: "A contract is not infrastructure. Nothing from libs/ belongs in a signature here."
+            - pkg: "github.com/jackc/pgx"
+              desc: "A contract describes the domain, not the driver."
+            - pkg: "github.com/redis/go-redis"
+              desc: "A contract describes the domain, not the cache client."
+            - pkg: "github.com/aws/aws-sdk-go-v2"
+              desc: "A contract describes the domain, not the SDK."
+            - pkg: "github.com/labstack/echo"
+              desc: "A contract crosses layers, and transport belongs to one of them."
+            - pkg: "go.uber.org/fx"
+              desc: "There is nothing to construct here."
+
+        entities-are-leaves:
+          files:
+            - "**/app/src/entities/**"
+          deny:
+            - pkg: "github.com/estrategiahq/pedro-test/app/src"
+              desc: "An entity mirrors a table and knows no layer."
+            - pkg: "github.com/jackc/pgx"
+              desc: "An entity is data, not a connection. The db struct tags are strings."
+            - pkg: "database/sql"
+              desc: "An entity is data, not a connection."
+            - pkg: "github.com/redis/go-redis"
+              desc: "An entity is data, not a cache."
+            - pkg: "github.com/labstack/echo"
+              desc: "An entity knows nothing about HTTP."
+
+        structs-are-leaves:
+          files:
+            - "**/app/src/structs/**"
+          deny:
+            - pkg: "github.com/estrategiahq/pedro-test/app/src/handlers"
+              desc: "structs/ is a leaf. A DTO that drags a layer along becomes a cycle."
+            - pkg: "github.com/estrategiahq/pedro-test/app/src/services"
+              desc: "structs/ is a leaf."
+            - pkg: "github.com/estrategiahq/pedro-test/app/src/repositories"
+              desc: "structs/ is a leaf."
+            - pkg: "github.com/estrategiahq/pedro-test/app/src/interfaces"
+              desc: "structs/ is a leaf, and the contracts are the ones that depend on it."
+            - pkg: "github.com/estrategiahq/pedro-test/app/src/libs/observability"
+              desc: "structs/ is DATA. Instrumenting is the layer's job, not the DTO's."
+            - pkg: "github.com/jackc/pgx"
+              desc: "structs/ is DATA, not infrastructure."
+            - pkg: "database/sql"
+              desc: "structs/ is DATA, not infrastructure."
+            - pkg: "github.com/redis/go-redis"
+              desc: "structs/ is DATA, not infrastructure."
+            - pkg: "github.com/labstack/echo"
+              desc: "structs/ crosses layers, and transport belongs to one of them."
+
+        services-without-infrastructure:
+          files:
+            - "**/app/src/services/**"
+            - "!**/module.go"
+          deny:
+            - pkg: "github.com/jackc/pgx"
+              desc: "A service does not talk to the database. Declare a port here and implement it in repositories/."
+            - pkg: "database/sql"
+              desc: "A service does not talk to the database."
+            - pkg: "github.com/redis/go-redis"
+              desc: "A service does not talk to the cache. Declare a port (Cache) and implement it in repositories/."
+            - pkg: "github.com/aws/aws-sdk-go-v2"
+              desc: "A service does not talk to an SDK. The queue is a port (Queue), implemented in repositories/."
+            - pkg: "github.com/labstack/echo"
+              desc: "A service knows nothing about HTTP. The handler translates the request."
+            - pkg: "github.com/coreos/go-oidc"
+              desc: "A service knows nothing about the IDP. libs/auth validates tokens behind a port."
+            - pkg: "github.com/estrategiahq/pedro-test/app/src/repositories"
+              desc: "A service depends on the port it declares, not on the implementation."
+            - pkg: "github.com/estrategiahq/pedro-test/app/src/handlers"
+              desc: "Dependencies point inwards: a service knows no handler."
+            - pkg: "go.uber.org/fx"
+              desc: "Wiring is not a business rule: fx only appears in module.go."
+
+        handlers-without-storage:
+          files:
+            - "**/app/src/handlers/**"
+            - "!**/module.go"
+          deny:
+            - pkg: "github.com/jackc/pgx"
+              desc: "A handler does not talk to the database. Call the service."
+            - pkg: "database/sql"
+              desc: "A handler does not talk to the database. Call the service."
+            - pkg: "github.com/redis/go-redis"
+              desc: "A handler does not talk to the cache. Call the service."
+            - pkg: "github.com/aws/aws-sdk-go-v2"
+              desc: "A handler does not talk to an SDK. Call the service."
+            - pkg: "github.com/estrategiahq/pedro-test/app/src/repositories"
+              desc: "A handler knows no repository. Call the service."
+            - pkg: "github.com/estrategiahq/pedro-test/app/src/services"
+              desc: "A handler depends on interfaces/<domain>, not on the implementation. That is what lets it be driven by a double."
+            - pkg: "go.uber.org/fx"
+              desc: "fx only appears in module.go."
+
+        repositories-without-http:
+          files:
+            - "**/app/src/repositories/**"
+            - "!**/module.go"
+          deny:
+            - pkg: "github.com/labstack/echo"
+              desc: "A repository knows nothing about HTTP."
+            - pkg: "github.com/estrategiahq/pedro-test/app/src/handlers"
+              desc: "Dependencies point inwards: a repository knows no handler."
+            - pkg: "github.com/estrategiahq/pedro-test/app/src/services"
+              desc: "An adapter implements the contract in interfaces/<domain>, and never reaches into the service that also implements one."
+            - pkg: "go.uber.org/fx"
+              desc: "fx only appears in module.go."
+
+        # Observability is cross-cutting; its libraries are not. Keeping zap and the
+        # OpenTelemetry SDK inside one package is what makes replacing them a local change.
+        telemetry-libraries-stay-in-observability:
+          files:
+            - "**/app/src/**"
+            - "!**/app/src/libs/observability/**"
+            - "!**/app/src/libs/db/**"
+          deny:
+            - pkg: "go.uber.org/zap"
+              desc: "Log through the Observer: it is what guarantees trace_id on the line and that every error is reported."
+            - pkg: "go.opentelemetry.io/otel/sdk"
+              desc: "Only libs/observability builds the SDK. Layers use observability.Observer."
+            - pkg: "go.opentelemetry.io/otel/exporters"
+              desc: "Exporters are a boot decision, not a layer decision."
+
+        tests-live-where-the-rules-live:
+          files:
+            - "**/app/src/**"
+            - "!**/app/src/services/**"
+            - "!**/app/src/entities/**"
+            - "!**/app/src/structs/**"
+          deny:
+            - pkg: "testing"
+              desc: "Unit tests live in services/ and on whatever logic exists in entities/ and structs/. Everything else is covered end to end by app/test/. If something here needs a unit test, the logic is in the wrong place."
+
+  exclusions:
+    paths:
+      # Generated by swag. Linting it would mean editing it, and the next `make docs` would
+      # throw the edit away.
+      - "app/docs"
+    rules:
+      - path: _test\.go
+        linters:
+          - errcheck
+          - cyclop
+          - bodyclose
+          - noctx
+      # cyclop applies to handlers only: path-except drops the linter everywhere else.
+      - path-except: (^|/)app/src/handlers/
+        linters:
+          - cyclop
+      # otelecho is marked deprecated in favour of github.com/labstack/echo-opentelemetry,
+      # which is still v0.0.x. Swapping a maintained contrib package for a pre-1.0 one just
+      # to silence a warning is not a trade this project makes. The exception is scoped to
+      # this import, so every other deprecation stays an error.
+      - path: (^|/)app/cmd/server/main\.go
+        text: "SA1019.*otelecho"
+        linters:
+          - staticcheck
+
+formatters:
+  enable:
+    - gofmt
+    - goimports

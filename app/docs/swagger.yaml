@@ -1,0 +1,84 @@
+basePath: /
+definitions:
+  health.Status:
+    properties:
+      role:
+        example: server
+        type: string
+      service:
+        example: pedro-test-server
+        type: string
+      status:
+        example: ok
+        type: string
+      version:
+        example: 1.4.0
+        type: string
+    type: object
+  structs.APIError:
+    properties:
+      message:
+        example: invalid token
+        type: string
+    type: object
+  structs.Principal:
+    properties:
+      email:
+        type: string
+      roles:
+        items:
+          type: string
+        type: array
+      sub:
+        type: string
+      username:
+        type: string
+    type: object
+info:
+  contact: {}
+  description: Tarefas criadas pela API e concluídas por um worker.
+  title: pedro-test
+  version: "1.0"
+paths:
+  /health:
+    get:
+      description: Aberta de propósito, para um orquestrador sem token conseguir perguntar.
+        Diz também qual aplicação e versão respondeu.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/health.Status'
+      summary: Liveness
+      tags:
+      - operations
+  /me:
+    get:
+      description: 'Devolve quem chamou, como o realm descreveu: subject, username,
+        e-mail e papéis.'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/structs.Principal'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/structs.APIError'
+      security:
+      - OAuth2Password: []
+      summary: Quem sou eu
+      tags:
+      - identity
+securityDefinitions:
+  OAuth2Password:
+    flow: password
+    scopes:
+      openid: Acesso à API
+    tokenUrl: http://localhost:8080/realms/pedro-test/protocol/openid-connect/token
+    type: oauth2
+swagger: "2.0"

@@ -1,0 +1,6 @@
+.env
+tmp/
+*.cov
+cover.html
+*.test
+/bin/
