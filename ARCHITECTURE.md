@@ -309,12 +309,13 @@ Estáveis, documentados, e distinguindo entrada corrigível de resultado definit
 | `REFERENCE_NOT_FOUND` | referência não chegou dentro do TTL | não |
 | `REFERENCE_NOT_PROCESSED` | referência existe mas terminou em `REJECTED`/`FAILED` | não |
 | `REFERENCE_ALREADY_REVERSED` | a referência já recebeu uma reversão bem-sucedida | não |
-| `REFERENCE_MISMATCH` | divergência de provedor, jogador, carteira, moeda ou rodada | não |
+| `REFERENCE_MISMATCH` | divergência de provedor, jogador, carteira, moeda ou rodada, ou uma referência de tipo que a reversão não desfaz (`REFUND` só desfaz `BET`; `ROLLBACK` desfaz `BET`, `WIN` ou `REFUND`) | não |
 | `AMOUNT_MISMATCH` | valor da reversão diferente do referenciado | sim, com outro valor |
 | `CURRENCY_MISMATCH` | moeda diferente da carteira | sim |
 | `WALLET_NOT_FOUND` | carteira inexistente | sim |
 | `OPENING_NOT_ALLOWED` | `OPENING` recebido por HTTP/SQS externo | não |
 | `INVALID_AMOUNT` | valor viola a política do tipo | sim |
+| `INTERNAL_ERROR` | código de uma transação `FAILED`: falha permanente de infraestrutura, só para auditoria | não |
 
 Os dois primeiros são **códigos diferentes de propósito**: o SPEC §7 exige que a reversão sem
 saldo não se confunda com a aposta sem saldo.
@@ -777,6 +778,14 @@ movimentação nem emite evento), métodos explícitos de transição e invarian
 toda operação pública. Isso **não** quebra nenhuma regra: `entities/` continua folha, sem
 importar `libs/`, driver ou framework — o lint `entities-are-leaves` continua valendo — e o
 CLAUDE.md §13 já permite teste unitário ali "onde existe lógica". É a §17 ("cresce sob demanda") funcionando como previsto.
+
+O estado do agregado é **encapsulado** (campos não exportados), então a tag `db:"..."` não fica
+no agregado e sim num **snapshot** exportado ao lado dele (`WalletSnapshot`,
+`WagerTransactionSnapshot`, `LedgerEntrySnapshot`, `OutboxEventSnapshot`,
+`InboxMessageSnapshot`). O repositório escaneia a linha no snapshot e chama
+`Rehydrate<Agregado>`, que só valida que aquilo poderia existir — não reaplica movimentação,
+transição nem evento. Para gravar, o caminho inverso é `agregado.Snapshot()`. As colunas que não
+se aplicam a uma transação interna (`OPENING`) são ponteiros no snapshot e viram `NULL`.
 
 **b) HTTP e SQS compartilham o mesmo service.**
 O CLAUDE.md §4 diz que o handler do worker chama um service próprio, porque "regra diferente,
