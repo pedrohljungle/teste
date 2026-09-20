@@ -654,6 +654,10 @@ CREATE TRIGGER trg_ledger_no_update BEFORE UPDATE ON wallet_ledger_entries
     FOR EACH ROW EXECUTE FUNCTION ledger_is_append_only();
 CREATE TRIGGER trg_ledger_no_delete BEFORE DELETE ON wallet_ledger_entries
     FOR EACH ROW EXECUTE FUNCTION ledger_is_append_only();
+-- TRUNCATE is a deletion that no row trigger sees, and the REVOKE below does not bind the table
+-- owner, so it gets its own statement trigger.
+CREATE TRIGGER trg_ledger_no_truncate BEFORE TRUNCATE ON wallet_ledger_entries
+    FOR EACH STATEMENT EXECUTE FUNCTION ledger_is_append_only();
 
 -- Defesa em profundidade: o trigger cobre a linha, o REVOKE cobre o comando.
 REVOKE UPDATE, DELETE, TRUNCATE ON wallet_ledger_entries FROM PUBLIC;
@@ -694,6 +698,7 @@ CREATE INDEX idx_outbox_aggregate ON outbox_events (aggregate_type, aggregate_id
 -- +goose Down
 DROP TABLE outbox_events;
 DROP TABLE inbox_messages;
+DROP TRIGGER trg_ledger_no_truncate ON wallet_ledger_entries;
 DROP TRIGGER trg_ledger_no_delete ON wallet_ledger_entries;
 DROP TRIGGER trg_ledger_no_update ON wallet_ledger_entries;
 DROP FUNCTION ledger_is_append_only();
