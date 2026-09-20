@@ -48,6 +48,7 @@ const (
 	FailureAmountMismatch            FailureCode = "AMOUNT_MISMATCH"
 	FailureCurrencyMismatch          FailureCode = "CURRENCY_MISMATCH"
 	FailureWalletNotFound            FailureCode = "WALLET_NOT_FOUND"
+	FailurePlayerMismatch            FailureCode = "PLAYER_MISMATCH"
 	FailureOpeningNotAllowed         FailureCode = "OPENING_NOT_ALLOWED"
 	FailureInvalidAmount             FailureCode = "INVALID_AMOUNT"
 	// FailureInternal is the code of a FAILED transaction: a permanent failure of the
@@ -59,7 +60,7 @@ const (
 // definitive result that a retry with the same content would only reproduce.
 func (c FailureCode) Correctable() bool {
 	switch c {
-	case FailureAmountMismatch, FailureCurrencyMismatch, FailureWalletNotFound, FailureInvalidAmount:
+	case FailureAmountMismatch, FailureCurrencyMismatch, FailureWalletNotFound, FailurePlayerMismatch, FailureInvalidAmount:
 		return true
 	default:
 		return false

@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -75,9 +76,41 @@ var clientSecrets = map[string]string{
 	ShortLived:      "short-lived-secret-local",
 }
 
-// ClientToken fetches a real access token for a machine identity with client_credentials, the
-// way a provider or an internal service authenticates in production.
+var (
+	tokenCacheMu sync.Mutex
+	tokenCache   = map[string]cachedToken{}
+)
+
+type cachedToken struct {
+	value   string
+	fetched time.Time
+}
+
+// tokenReuse is how long a fetched token is reused. The realm issues them for fifteen minutes,
+// and the suite runs in well under one, so reusing them is safe and spares Keycloak a call for
+// every request of a scenario that sends dozens.
+const tokenReuse = 5 * time.Minute
+
+// ClientToken returns a real access token for a machine identity with client_credentials, the
+// way a provider or an internal service authenticates in production. The short lived identity
+// is never cached: its whole point is that its token expires.
 func (s *Stack) ClientToken(t *testing.T, clientID string) string {
+	t.Helper()
+
+	if clientID == ShortLived {
+		return s.fetchClientToken(t, clientID)
+	}
+	tokenCacheMu.Lock()
+	defer tokenCacheMu.Unlock()
+	if cached, ok := tokenCache[clientID]; ok && time.Since(cached.fetched) < tokenReuse {
+		return cached.value
+	}
+	token := s.fetchClientToken(t, clientID)
+	tokenCache[clientID] = cachedToken{value: token, fetched: time.Now()}
+	return token
+}
+
+func (s *Stack) fetchClientToken(t *testing.T, clientID string) string {
 	t.Helper()
 
 	form := url.Values{

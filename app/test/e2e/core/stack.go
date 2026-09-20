@@ -17,6 +17,7 @@ import (
 	"github.com/estrategiahq/pedro-test/app/src/handlers"
 	"github.com/estrategiahq/pedro-test/app/src/handlers/health"
 	"github.com/estrategiahq/pedro-test/app/src/handlers/identity"
+	wageringhandler "github.com/estrategiahq/pedro-test/app/src/handlers/wagering"
 	wallethandler "github.com/estrategiahq/pedro-test/app/src/handlers/wallet"
 	outboxiface "github.com/estrategiahq/pedro-test/app/src/interfaces/outbox"
 	persistenceiface "github.com/estrategiahq/pedro-test/app/src/interfaces/persistence"
@@ -199,6 +200,7 @@ type routeParams struct {
 	Health   *health.Handler
 	Identity *identity.Handler
 	Wallet   *wallethandler.Handler
+	Wagering *wageringhandler.Handler
 }
 
 // serverRoutes mirrors cmd/server: the same ServerRoutes functions, the same middlewares on the
@@ -209,6 +211,8 @@ func serverRoutes(p routeParams) {
 	identity.ServerRoutes(p.Echo, p.Identity, p.Auth.RequireAuthentication)
 	wallethandler.ServerRoutes(p.Echo, p.Wallet,
 		p.Auth.RequireAuthentication, p.Auth.RequireRealmRole(structs.RoleInternalService))
+	wageringhandler.ServerRoutes(p.Echo, p.Wagering,
+		p.Auth.RequireAuthentication, p.Auth.RequireRealmRole(structs.RoleProvider))
 
 	docsRoutes(p.Echo, p.Config)
 }

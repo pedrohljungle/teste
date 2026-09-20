@@ -54,7 +54,7 @@ func TestFailureCodeOfClassifiesBusinessOutcomesOnly(t *testing.T) {
 }
 
 func TestOnlyInputTheProviderCanFixIsCorrectable(t *testing.T) {
-	correctable := []FailureCode{FailureAmountMismatch, FailureCurrencyMismatch, FailureWalletNotFound, FailureInvalidAmount}
+	correctable := []FailureCode{FailureAmountMismatch, FailureCurrencyMismatch, FailureWalletNotFound, FailurePlayerMismatch, FailureInvalidAmount}
 	definitive := []FailureCode{
 		FailureInsufficientFunds, FailureRollbackInsufficientFunds, FailureReferenceNotFound,
 		FailureReferenceNotProcessed, FailureReferenceAlreadyReversed, FailureReferenceMismatch,

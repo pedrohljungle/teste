@@ -11,6 +11,7 @@ import (
 
 	"github.com/estrategiahq/pedro-test/app/src/handlers/health"
 	"github.com/estrategiahq/pedro-test/app/src/handlers/identity"
+	"github.com/estrategiahq/pedro-test/app/src/handlers/wagering"
 	"github.com/estrategiahq/pedro-test/app/src/handlers/wallet"
 )
 
@@ -19,5 +20,6 @@ import (
 var Module = fx.Module("handlers",
 	health.Module,
 	identity.Module,
+	wagering.Module,
 	wallet.Module,
 )

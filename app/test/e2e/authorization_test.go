@@ -4,6 +4,7 @@ package e2e
 
 import (
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -26,6 +27,10 @@ import (
 //	  - A request with a forged token is refused and changes nothing
 //	  - A request with an expired token is refused and changes nothing
 //	  - A provider cannot open a wallet
+//	  - A wagering request without a token is refused and changes nothing
+//	  - An internal service cannot submit operations
+//	  - A provider cannot submit an operation for another provider
+//	  - A provider cannot replay another provider's operation
 
 // openWalletWith posts a wallet opening under the given bearer.
 func openWalletWith(t *testing.T, bearer, playerID string) *http.Response {
@@ -97,6 +102,84 @@ func TestAProviderCannotOpenAWallet(t *testing.T) {
 	core.RequireStatus(t, openWalletWith(t, stack.ClientToken(t, core.ProviderA), playerID), http.StatusForbidden)
 
 	requireNoTraceOf(t, playerID)
+}
+
+// Scenario: A wagering request without a token is refused and changes nothing
+//
+//	Given a wallet with balance 100.00 BRL
+//	When a bet is posted with no Authorization header
+//	Then the response is 401
+//	And no transaction, ledger entry or event was added
+func TestAWageringRequestWithoutATokenIsRefusedAndChangesNothing(t *testing.T) {
+	w := newWallet(t, "100.00")
+	before := walletState(t, w.ID)
+
+	core.RequireStatus(t, stack.RequestWithHeaders(t, http.MethodPost, "/wagering/transactions", "",
+		w.operation("BET", "25.00"), map[string]string{"Idempotency-Key": "k-" + uuid.NewString()}), http.StatusUnauthorized)
+
+	if after := walletState(t, w.ID); after != before || transactionsOf(t, w.ID) != 0 {
+		t.Fatalf("an unauthenticated request left a trace: %+v", after)
+	}
+}
+
+// Scenario: An internal service cannot submit operations
+//
+//	Given a wallet with balance 100.00 BRL
+//	When a valid token of the internal service posts a bet
+//	Then the response is 403
+//	And no transaction, ledger entry or event was added
+func TestAnInternalServiceCannotSubmitOperations(t *testing.T) {
+	w := newWallet(t, "100.00")
+	before := walletState(t, w.ID)
+
+	core.RequireStatus(t, submitAs(t, core.InternalService, "k-"+uuid.NewString(), w.operation("BET", "25.00")), http.StatusForbidden)
+
+	if after := walletState(t, w.ID); after != before || transactionsOf(t, w.ID) != 0 {
+		t.Fatalf("a forbidden request left a trace: %+v", after)
+	}
+}
+
+// Scenario: A provider cannot submit an operation for another provider
+//
+//	Given a token issued for provider-a
+//	When a bet declaring provider-b is posted
+//	Then the response is 403
+//	And nothing is persisted
+func TestAProviderCannotSubmitAnOperationForAnotherProvider(t *testing.T) {
+	w := newWallet(t, "100.00")
+	before := walletState(t, w.ID)
+	body := w.operation("BET", "25.00")
+	body.ProviderID = core.ProviderB
+
+	core.RequireStatus(t, submitAs(t, core.ProviderA, "k-"+uuid.NewString(), body), http.StatusForbidden)
+
+	if after := walletState(t, w.ID); after != before || transactionsOf(t, w.ID) != 0 {
+		t.Fatalf("an impersonation left a trace: %+v", after)
+	}
+}
+
+// Scenario: A provider cannot replay another provider's operation
+//
+//	Given an operation processed for provider-b
+//	When provider-a posts it, naming provider-b, under the same idempotency key
+//	Then the response is 403 and the stored result is not disclosed
+func TestAProviderCannotReplayAnotherProvidersOperation(t *testing.T) {
+	w := newWallet(t, "1000.00")
+	body := w.operation("BET", "25.00")
+	body.ProviderID = core.ProviderB
+	key := core.ProviderB + ":" + body.ExternalTransactionID
+	stored := core.Decode[transactionResponse](t, core.KeepStatus(t, submitAs(t, core.ProviderB, key, body), http.StatusOK))
+
+	res := submitAs(t, core.ProviderA, key, body)
+	raw := core.KeepStatus(t, res, http.StatusForbidden)
+	answer := core.Decode[errorResponse](t, raw)
+
+	if answer.Message == "" || strings.Contains(answer.Message, stored.TransactionID) || strings.Contains(answer.Message, "975.00") {
+		t.Fatalf("the refusal disclosed the stored result: %q", answer.Message)
+	}
+	if s := walletState(t, w.ID); s.debits != 2500 {
+		t.Fatalf("the replay attempt changed the wallet: %+v", s)
+	}
 }
 
 // requireNoTraceOf asserts that nothing of a player reached storage.

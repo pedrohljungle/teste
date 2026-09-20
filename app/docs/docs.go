@@ -66,6 +66,100 @@ const docTemplate = `{
                 }
             }
         },
+        "/wagering/transactions": {
+            "post": {
+                "security": [
+                    {
+                        "OAuth2Password": []
+                    }
+                ],
+                "description": "Aplica BET, WIN, LOSS, REFUND ou ROLLBACK a uma carteira, uma única vez, por mais que seja reenviada. O header Idempotency-Key é obrigatório e nunca é substituído pelo servidor. Mesma chave e mesmo conteúdo devolvem o resultado gravado, com o saldo observado no processamento original (200 ou 422, com idempotentReplay true). Mesma chave com outro conteúdo, ou a mesma operação sob outra chave, é 409. O providerId do corpo precisa ser o do token.\nDistinguível pelo status: 200 processada, 202 aguardando referência, 400 entrada inválida (nada gravado), 409 conflito de idempotência, 422 rejeição de negócio (com failureCode, gravada e reproduzível), 503 indisponibilidade transitória (tente de novo).",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "wagering"
+                ],
+                "summary": "Envia uma operação de um provedor",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Chave escolhida pelo provedor, por exemplo provider-a:transaction-123",
+                        "name": "Idempotency-Key",
+                        "in": "header",
+                        "required": true
+                    },
+                    {
+                        "description": "A operação",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/wagering.SubmitRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/wagering.TransactionResponse"
+                        }
+                    },
+                    "202": {
+                        "description": "Accepted",
+                        "schema": {
+                            "$ref": "#/definitions/wagering.TransactionResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/structs.APIError"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "$ref": "#/definitions/structs.APIError"
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "$ref": "#/definitions/structs.APIError"
+                        }
+                    },
+                    "409": {
+                        "description": "Conflict",
+                        "schema": {
+                            "$ref": "#/definitions/structs.APIError"
+                        }
+                    },
+                    "422": {
+                        "description": "Unprocessable Entity",
+                        "schema": {
+                            "$ref": "#/definitions/wagering.TransactionResponse"
+                        }
+                    },
+                    "501": {
+                        "description": "Not Implemented",
+                        "schema": {
+                            "$ref": "#/definitions/structs.APIError"
+                        }
+                    },
+                    "503": {
+                        "description": "Service Unavailable",
+                        "schema": {
+                            "$ref": "#/definitions/structs.APIError"
+                        }
+                    }
+                }
+            }
+        },
         "/wallets": {
             "post": {
                 "security": [
@@ -206,6 +300,83 @@ const docTemplate = `{
                 },
                 "username": {
                     "type": "string"
+                }
+            }
+        },
+        "wagering.SubmitRequest": {
+            "type": "object",
+            "properties": {
+                "externalTransactionId": {
+                    "type": "string",
+                    "example": "transaction-123"
+                },
+                "gameId": {
+                    "type": "string",
+                    "example": "fortune-chimp"
+                },
+                "kind": {
+                    "type": "string",
+                    "enum": [
+                        "BET",
+                        "WIN",
+                        "LOSS",
+                        "REFUND",
+                        "ROLLBACK"
+                    ],
+                    "example": "BET"
+                },
+                "money": {
+                    "$ref": "#/definitions/structs.MoneyDTO"
+                },
+                "playerId": {
+                    "type": "string",
+                    "example": "0192f28f-5dc0-7d58-bdb2-814ad6a0f4a1"
+                },
+                "providerId": {
+                    "type": "string",
+                    "example": "provider-a"
+                },
+                "referenceExternalTransactionId": {
+                    "type": "string",
+                    "example": "transaction-122"
+                },
+                "roundId": {
+                    "type": "string",
+                    "example": "round-987"
+                },
+                "walletId": {
+                    "type": "string",
+                    "example": "0192f291-27dd-7d3f-8071-5f8685deef37"
+                }
+            }
+        },
+        "wagering.TransactionResponse": {
+            "type": "object",
+            "properties": {
+                "balance": {
+                    "$ref": "#/definitions/structs.MoneyDTO"
+                },
+                "failureCode": {
+                    "type": "string",
+                    "example": "INSUFFICIENT_FUNDS"
+                },
+                "idempotentReplay": {
+                    "type": "boolean",
+                    "example": false
+                },
+                "status": {
+                    "type": "string",
+                    "enum": [
+                        "PROCESSED",
+                        "REJECTED",
+                        "PENDING_REFERENCE",
+                        "FAILED"
+                    ],
+                    "example": "PROCESSED"
+                },
+                "transactionId": {
+                    "type": "string",
+                    "example": "0192f298-345e-7e38-af88-e43f851a819d"
                 }
             }
         },

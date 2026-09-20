@@ -56,6 +56,63 @@ definitions:
       username:
         type: string
     type: object
+  wagering.SubmitRequest:
+    properties:
+      externalTransactionId:
+        example: transaction-123
+        type: string
+      gameId:
+        example: fortune-chimp
+        type: string
+      kind:
+        enum:
+        - BET
+        - WIN
+        - LOSS
+        - REFUND
+        - ROLLBACK
+        example: BET
+        type: string
+      money:
+        $ref: '#/definitions/structs.MoneyDTO'
+      playerId:
+        example: 0192f28f-5dc0-7d58-bdb2-814ad6a0f4a1
+        type: string
+      providerId:
+        example: provider-a
+        type: string
+      referenceExternalTransactionId:
+        example: transaction-122
+        type: string
+      roundId:
+        example: round-987
+        type: string
+      walletId:
+        example: 0192f291-27dd-7d3f-8071-5f8685deef37
+        type: string
+    type: object
+  wagering.TransactionResponse:
+    properties:
+      balance:
+        $ref: '#/definitions/structs.MoneyDTO'
+      failureCode:
+        example: INSUFFICIENT_FUNDS
+        type: string
+      idempotentReplay:
+        example: false
+        type: boolean
+      status:
+        enum:
+        - PROCESSED
+        - REJECTED
+        - PENDING_REFERENCE
+        - FAILED
+        example: PROCESSED
+        type: string
+      transactionId:
+        example: 0192f298-345e-7e38-af88-e43f851a819d
+        type: string
+    type: object
   wallet.OpenRequest:
     properties:
       initialBalance:
@@ -119,6 +176,69 @@ paths:
       summary: Quem sou eu
       tags:
       - identity
+  /wagering/transactions:
+    post:
+      consumes:
+      - application/json
+      description: |-
+        Aplica BET, WIN, LOSS, REFUND ou ROLLBACK a uma carteira, uma única vez, por mais que seja reenviada. O header Idempotency-Key é obrigatório e nunca é substituído pelo servidor. Mesma chave e mesmo conteúdo devolvem o resultado gravado, com o saldo observado no processamento original (200 ou 422, com idempotentReplay true). Mesma chave com outro conteúdo, ou a mesma operação sob outra chave, é 409. O providerId do corpo precisa ser o do token.
+        Distinguível pelo status: 200 processada, 202 aguardando referência, 400 entrada inválida (nada gravado), 409 conflito de idempotência, 422 rejeição de negócio (com failureCode, gravada e reproduzível), 503 indisponibilidade transitória (tente de novo).
+      parameters:
+      - description: Chave escolhida pelo provedor, por exemplo provider-a:transaction-123
+        in: header
+        name: Idempotency-Key
+        required: true
+        type: string
+      - description: A operação
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/wagering.SubmitRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/wagering.TransactionResponse'
+        "202":
+          description: Accepted
+          schema:
+            $ref: '#/definitions/wagering.TransactionResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/structs.APIError'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/structs.APIError'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/structs.APIError'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/structs.APIError'
+        "422":
+          description: Unprocessable Entity
+          schema:
+            $ref: '#/definitions/wagering.TransactionResponse'
+        "501":
+          description: Not Implemented
+          schema:
+            $ref: '#/definitions/structs.APIError'
+        "503":
+          description: Service Unavailable
+          schema:
+            $ref: '#/definitions/structs.APIError'
+      security:
+      - OAuth2Password: []
+      summary: Envia uma operação de um provedor
+      tags:
+      - wagering
   /wallets:
     post:
       consumes:

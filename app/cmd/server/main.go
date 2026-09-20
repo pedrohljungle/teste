@@ -26,6 +26,7 @@ import (
 	"github.com/estrategiahq/pedro-test/app/src/handlers"
 	"github.com/estrategiahq/pedro-test/app/src/handlers/health"
 	"github.com/estrategiahq/pedro-test/app/src/handlers/identity"
+	wageringhandler "github.com/estrategiahq/pedro-test/app/src/handlers/wagering"
 	wallethandler "github.com/estrategiahq/pedro-test/app/src/handlers/wallet"
 	"github.com/estrategiahq/pedro-test/app/src/libs/appinfo"
 	"github.com/estrategiahq/pedro-test/app/src/libs/auth"
@@ -118,18 +119,21 @@ type routeParams struct {
 	Health   *health.Handler
 	Identity *identity.Handler
 	Wallet   *wallethandler.Handler
+	Wagering *wageringhandler.Handler
 }
 
 // serverRoutes is the map of what this process serves. Each domain registers itself and names,
 // on each route, the middlewares that route requires.
 //
-// health and identity are the two routes any service has regardless of what it does; the wallet
-// is the first domain, and it is reserved to the internal service role.
+// health and identity are the two routes any service has regardless of what it does. The wallet
+// is reserved to the internal service role, and the wagering routes to providers.
 func serverRoutes(p routeParams) {
 	health.ServerRoutes(p.Echo, p.Health)
 	identity.ServerRoutes(p.Echo, p.Identity, p.Auth.RequireAuthentication)
 	wallethandler.ServerRoutes(p.Echo, p.Wallet,
 		p.Auth.RequireAuthentication, p.Auth.RequireRealmRole(structs.RoleInternalService))
+	wageringhandler.ServerRoutes(p.Echo, p.Wagering,
+		p.Auth.RequireAuthentication, p.Auth.RequireRealmRole(structs.RoleProvider))
 
 	// A domain registers itself in one line:
 	//

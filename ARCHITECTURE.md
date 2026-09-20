@@ -312,7 +312,8 @@ Estáveis, documentados, e distinguindo entrada corrigível de resultado definit
 | `REFERENCE_MISMATCH` | divergência de provedor, jogador, carteira, moeda ou rodada, ou uma referência de tipo que a reversão não desfaz (`REFUND` só desfaz `BET`; `ROLLBACK` desfaz `BET`, `WIN` ou `REFUND`) | não |
 | `AMOUNT_MISMATCH` | valor da reversão diferente do referenciado | sim, com outro valor |
 | `CURRENCY_MISMATCH` | moeda diferente da carteira | sim |
-| `WALLET_NOT_FOUND` | carteira inexistente | sim |
+| `WALLET_NOT_FOUND` | carteira inexistente. **Não é gravada**: uma transação exige a carteira (chave estrangeira), então a rejeição sai só na resposta, `422` com o código | sim |
+| `PLAYER_MISMATCH` | o `playerId` da operação não é o dono da carteira | sim |
 | `OPENING_NOT_ALLOWED` | `OPENING` recebido por HTTP/SQS externo | não |
 | `INVALID_AMOUNT` | valor viola a política do tipo | sim |
 | `INTERNAL_ERROR` | código de uma transação `FAILED`: falha permanente de infraestrutura, só para auditoria | não |
@@ -1099,7 +1100,7 @@ pela aplicação.
 | `400` | payload inválido, `Idempotency-Key` ausente, `OPENING` recebido | `apierr.Error` |
 | `401` / `403` | token ausente/inválido · `providerId` divergente do token | `apierr.Error` |
 | `409` | chave reusada com outro conteúdo, ou operação já existente com outra chave | `apierr.Error` |
-| `422` | rejeição de negócio | `apierr.Error` + `failureCode` |
+| `422` | rejeição de negócio: **gravada e reproduzível**, corpo `TransactionResponse` com `status: REJECTED`, `failureCode` e `transactionId`. Só `WALLET_NOT_FOUND` responde `422` sem `transactionId`, porque não há o que gravar | `TransactionResponse` |
 | `503` | Postgres ou SQS indisponível, verificador não carregado | `apierr.Error` |
 
 **`422` × `409` × `503` é a distinção que o SPEC §9 cobra.** `409` é "sua chave está errada" —
