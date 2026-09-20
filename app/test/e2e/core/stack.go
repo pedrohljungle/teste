@@ -17,6 +17,10 @@ import (
 	"github.com/estrategiahq/pedro-test/app/src/handlers"
 	"github.com/estrategiahq/pedro-test/app/src/handlers/health"
 	"github.com/estrategiahq/pedro-test/app/src/handlers/identity"
+	outboxiface "github.com/estrategiahq/pedro-test/app/src/interfaces/outbox"
+	persistenceiface "github.com/estrategiahq/pedro-test/app/src/interfaces/persistence"
+	wageringiface "github.com/estrategiahq/pedro-test/app/src/interfaces/wagering"
+	walletiface "github.com/estrategiahq/pedro-test/app/src/interfaces/wallet"
 	"github.com/estrategiahq/pedro-test/app/src/libs/appinfo"
 	"github.com/estrategiahq/pedro-test/app/src/libs/auth"
 	"github.com/estrategiahq/pedro-test/app/src/libs/bootstrap"
@@ -37,6 +41,9 @@ import (
 type Stack struct {
 	// BaseURL is where the server answers.
 	BaseURL string
+	// Repos are the adapters of the running application, for scenarios that exercise storage
+	// directly instead of through a route.
+	Repos *Repositories
 	// KeycloakURL is the realm root, for fetching tokens.
 	KeycloakURL string
 
@@ -45,6 +52,15 @@ type Stack struct {
 	recorder    *recorder
 	app         *fx.App
 	infra       *infra
+}
+
+// Repositories are the storage contracts as the running application wired them: the real
+// adapters, against the real database.
+type Repositories struct {
+	UnitOfWork persistenceiface.UnitOfWork
+	Wallets    walletiface.Repository
+	Wagering   wageringiface.Repository
+	Outbox     outboxiface.Repository
 }
 
 // Start brings up the containers, applies the migrations and boots the application. The
@@ -113,6 +129,7 @@ func boot(ctx context.Context, in *infra) (*Stack, error) {
 	}
 
 	handler := &recorder{}
+	repos := &Repositories{}
 
 	app := fx.New(
 		fx.Supply(appinfo.App{Name: "pedro-test-e2e", Role: appinfo.RoleServer, Version: "test"}),
@@ -127,6 +144,8 @@ func boot(ctx context.Context, in *infra) (*Stack, error) {
 		fx.Provide(newEcho),
 		fx.Invoke(serverRoutes),
 		fx.Invoke(runServer),
+
+		fx.Populate(&repos.UnitOfWork, &repos.Wallets, &repos.Wagering, &repos.Outbox),
 
 		fx.Supply(handler),
 		fx.Invoke(prepareWorkers),
@@ -143,6 +162,7 @@ func boot(ctx context.Context, in *infra) (*Stack, error) {
 	}
 
 	return &Stack{
+		Repos:       repos,
 		BaseURL:     "http://127.0.0.1:" + port,
 		KeycloakURL: in.keycloakURL,
 		queueURL:    in.queueURL,

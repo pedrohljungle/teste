@@ -9,5 +9,6 @@ var Module = fx.Module("db",
 	fx.Provide(
 		NewPostgres,
 		NewRedis,
+		NewAccessor,
 	),
 )
