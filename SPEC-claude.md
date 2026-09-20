@@ -79,7 +79,7 @@ Ordenado por ponto por hora de trabalho. Cada linha é um PR.
 
 | # | Entrega | Cenários (§3.2) | Fecha |
 |---|---|---|---|
-| 1 | `structs/money.go` + testes unitários | — (unitário) | tira o risco eliminatório de float |
+| 1 | `entities/money.go` + testes unitários | — (unitário) | tira o risco eliminatório de float |
 | 2 | Migration única: 5 tabelas, unicidade, `balance >= 0`, triggers | F11 | §5.8, §6.4 |
 | 3 | `entities/` com invariante, transição e reidratação + testes | — (unitário) | §6 |
 | 4 | `persistence.UnitOfWork` + `db.Accessor` + repositórios pgx | — | §11 atomicidade |
@@ -116,11 +116,11 @@ E mais duas condições que comando nenhum verifica sozinho:
 - **nenhum cenário com `t.Skip`**, `t.Parallel()` faltando onde o cenário exige paralelismo,
   ou asserção comentada.
 
-> **Atenção ao `gofmt`.** O `.golangci.yml` habilita `govet`, mas **não** habilita `gofmt` — ou
-> seja, `make lint` não pega formatação hoje. Ou o `gofmt -l` entra na DoD à mão, ou se
-> acrescenta `gofmt` ao `enable:` do `.golangci.yml`. A segunda é melhor: DoD que depende de
-> alguém lembrar não é mecanismo, e o resto deste repositório é mecanismo. Vale também criar um
-> alvo `make verify` que encadeia os seis, para a DoD ser um comando só.
+> **`gofmt` já está coberto por `make lint`.** O `.golangci.yml` habilita `gofmt` e `goimports`
+> em `formatters:`, e o `golangci-lint` os reporta como `File is not properly formatted
+> (gofmt)` (verificado com um arquivo mal formatado). O `gofmt -l` na lista acima continua
+> valendo por ser o comando que o SPEC §15 cita literalmente, mas não é um segundo mecanismo.
+> Um alvo `make verify` que encadeia os seis passos deixa a DoD num comando só.
 
 ### 3.2 Cenários de e2e
 

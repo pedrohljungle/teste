@@ -911,7 +911,7 @@ app/src/
 
 | Exigência | Camada |
 |---|---|
-| `Money`: parsing, aritmética, overflow, moeda | `structs/money.go` — dado que atravessa camada, com lógica própria e teste unitário (CLAUDE.md §13) |
+| `Money`: parsing, aritmética, overflow, moeda | `entities/money.go` — value object do domínio, folha, com teste unitário (CLAUDE.md §13) |
 | Invariante do agregado, transições, reidratação | `entities/` — folha, sem infra (ver §4.1a) |
 | Caso de uso, ordem das operações, delimitação da transação | `services/` |
 | Isolamento entre provedores em consulta e replay | `services/` — autorização que olha o dado é regra de negócio (§8) |

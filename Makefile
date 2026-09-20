@@ -1,4 +1,4 @@
-.PHONY: help test test-e2e coverage lint docs tidy build run-server run-worker migrate-up migrate-down migrate-status migrate-create up down logs token
+.PHONY: help verify test test-e2e coverage lint docs tidy build run-server run-worker migrate-up migrate-down migrate-status migrate-create up down logs token
 
 MIN_COVERAGE ?= 80
 KEYCLOAK_URL ?= http://localhost:8080
@@ -14,6 +14,15 @@ export GOOSE_MIGRATION_DIR ?= migrations
 
 help:
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-20s\033[0m %s\n", $$1, $$2}'
+
+# The definition of done of every step: formatting, vet, lint, unit tests, coverage and the end
+# to end suite. gofmt -l prints the files that are not formatted, and any output fails the
+# target.
+verify: ## Run the whole definition of done (needs Docker for the e2e suite)
+	@unformatted="$$(gofmt -l app)"; \
+	if [ -n "$$unformatted" ]; then echo "gofmt: not formatted:"; echo "$$unformatted"; exit 1; fi
+	go vet ./...
+	$(MAKE) lint test coverage test-e2e
 
 test: ## Run the unit tests with the race detector
 	go test -race -failfast -timeout=120s ./...
