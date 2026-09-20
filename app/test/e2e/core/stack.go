@@ -7,9 +7,11 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"sync"
 	"time"
 
 	"github.com/go-playground/validator/v10"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/labstack/echo/v4"
 	echomiddleware "github.com/labstack/echo/v4/middleware"
 	"go.uber.org/fx"
@@ -27,6 +29,7 @@ import (
 	"github.com/estrategiahq/pedro-test/app/src/libs/auth"
 	"github.com/estrategiahq/pedro-test/app/src/libs/bootstrap"
 	"github.com/estrategiahq/pedro-test/app/src/libs/config"
+	"github.com/estrategiahq/pedro-test/app/src/libs/cronjob"
 	"github.com/estrategiahq/pedro-test/app/src/libs/jobrunner"
 	"github.com/estrategiahq/pedro-test/app/src/libs/middleware"
 	"github.com/estrategiahq/pedro-test/app/src/repositories/queue"
@@ -49,10 +52,17 @@ type Stack struct {
 	Repos *Repositories
 	// KeycloakURL is the realm root, for fetching tokens.
 	KeycloakURL string
+	// Faults injects the failures a scenario cannot provoke from outside, at the ports of the
+	// outbox.
+	Faults *Faults
 
 	queueURL    string
 	awsEndpoint string
 	recorder    *recorder
+	sink        *sink
+	poolOnce    sync.Once
+	pool        *pgxpool.Pool
+	poolErr     error
 	app         *fx.App
 	infra       *infra
 }
@@ -89,7 +99,11 @@ func Start(ctx context.Context) (*Stack, error) {
 
 // Stop shuts the application down and terminates the containers.
 func (s *Stack) Stop(ctx context.Context) error {
+	s.sink.stop()
 	err := s.app.Stop(ctx)
+	if s.pool != nil {
+		s.pool.Close()
+	}
 	s.infra.terminate(context.Background())
 	return err
 }
@@ -114,11 +128,18 @@ func boot(ctx context.Context, in *infra) (*Stack, error) {
 		"AWS_ACCESS_KEY_ID":      "test",
 		"AWS_SECRET_ACCESS_KEY":  "test",
 		"SQS_QUEUE_URL":          in.queueURL,
+		"SQS_EVENTS_QUEUE_URL":   in.eventsURL,
 		"WORKER_POLL_TIMEOUT":    "2s",
 		// Short on purpose: a redelivery scenario waits for this to expire, and ten seconds
 		// of waiting per test is how a suite stops being run.
 		"WORKER_VISIBILITY_TIMEOUT": "2",
 		"WORKER_CONCURRENCY":        "2",
+		// The outbox publisher is fast and impatient here, and its lease short, so a scenario about
+		// a dead publisher or a failing broker waits seconds and not a minute.
+		"OUTBOX_POLL_INTERVAL": "200ms",
+		"OUTBOX_LEASE":         "3s",
+		"OUTBOX_BACKOFF_BASE":  "400ms",
+		"OUTBOX_BACKOFF_MAX":   "2s",
 		// Telemetry off: the suite asserts on behaviour, and an unreachable collector would
 		// only add noise and startup time.
 		"OTEL_EXPORTER_OTLP_ENDPOINT": "",
@@ -133,6 +154,7 @@ func boot(ctx context.Context, in *infra) (*Stack, error) {
 
 	handler := &recorder{}
 	repos := &Repositories{}
+	faults := newFaults()
 
 	app := fx.New(
 		fx.Supply(appinfo.App{Name: "pedro-test-e2e", Role: appinfo.RoleServer, Version: "test"}),
@@ -143,6 +165,8 @@ func boot(ctx context.Context, in *infra) (*Stack, error) {
 		middleware.Module,
 		handlers.Module,
 		jobrunner.Module,
+		cronjob.Module,
+		faults.options(),
 
 		fx.Provide(newEcho),
 		fx.Invoke(serverRoutes),
@@ -152,7 +176,9 @@ func boot(ctx context.Context, in *infra) (*Stack, error) {
 
 		fx.Supply(handler),
 		fx.Invoke(prepareWorkers),
+		fx.Invoke(registerOutboxCronjob),
 		fx.Invoke(jobrunner.Run),
+		fx.Invoke(cronjob.Run),
 
 		fx.NopLogger,
 
@@ -164,8 +190,16 @@ func boot(ctx context.Context, in *infra) (*Stack, error) {
 		return nil, fmt.Errorf("start the application: %w", err)
 	}
 
+	events, err := startSink(ctx, in.awsEndpoint, in.eventsURL)
+	if err != nil {
+		_ = app.Stop(ctx)
+		return nil, fmt.Errorf("start the events sink: %w", err)
+	}
+
 	return &Stack{
 		Repos:       repos,
+		Faults:      faults,
+		sink:        events,
 		BaseURL:     "http://127.0.0.1:" + port,
 		KeycloakURL: in.keycloakURL,
 		queueURL:    in.queueURL,

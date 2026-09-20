@@ -155,6 +155,14 @@ func (s outboxStore) Insert(_ context.Context, e *entities.OutboxEvent) error {
 	return nil
 }
 
+func (s outboxStore) Claim(context.Context, string, int, time.Duration, time.Time) ([]*entities.OutboxEvent, error) {
+	return nil, errors.New("not used by this service")
+}
+func (s outboxStore) Complete(context.Context, *entities.OutboxEvent) error { return nil }
+func (s outboxStore) Release(context.Context, *entities.OutboxEvent, string) error {
+	return nil
+}
+
 var fixedNow = time.Date(2026, time.September, 8, 12, 0, 0, 0, time.UTC)
 
 func newTestService(m *memory) *service {

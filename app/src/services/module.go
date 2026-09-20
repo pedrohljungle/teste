@@ -5,12 +5,14 @@ package services
 import (
 	"go.uber.org/fx"
 
+	"github.com/estrategiahq/pedro-test/app/src/services/outbox"
 	"github.com/estrategiahq/pedro-test/app/src/services/wagering"
 	"github.com/estrategiahq/pedro-test/app/src/services/wallet"
 )
 
 // Module wires every domain module of this layer.
 var Module = fx.Module("services",
+	outbox.Module,
 	wagering.Module,
 	wallet.Module,
 )

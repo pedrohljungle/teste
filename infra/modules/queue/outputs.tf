@@ -17,3 +17,13 @@ output "visibility_timeout_seconds" {
   description = "Visibility timeout, so the task definition can be configured with the same value."
   value       = aws_sqs_queue.tasks.visibility_timeout_seconds
 }
+
+output "events_queue_url" {
+  description = "URL of the FIFO queue of integration events."
+  value       = aws_sqs_queue.events.url
+}
+
+output "events_queue_arn" {
+  description = "ARN of the FIFO queue of integration events."
+  value       = aws_sqs_queue.events.arn
+}

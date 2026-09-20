@@ -308,3 +308,46 @@ func equalOutbox(a, b OutboxEventSnapshot) bool {
 		a.NextAttemptAt.Equal(b.NextAttemptAt) && a.CorrelationID == b.CorrelationID &&
 		textValue(a.CausationID) == textValue(b.CausationID)
 }
+
+func TestAnEventIsPublishedOnceAndOnlyWhilePending(t *testing.T) {
+	tx := processed(t, newTransaction(t, nil))
+	event, err := NewWagerTransactionProcessedEvent(id(20), tx, "corr-1", "", t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := event.MarkPublished(t0.Add(time.Second)); err != nil {
+		t.Fatalf("MarkPublished: %v", err)
+	}
+	if event.Status() != OutboxPublished || !event.PublishedAt().Equal(t0.Add(time.Second)) || event.LockedBy() != "" {
+		t.Fatalf("status %s, publishedAt %s, lockedBy %q", event.Status(), event.PublishedAt(), event.LockedBy())
+	}
+	if err := event.MarkPublished(t0.Add(time.Hour)); !errors.Is(err, ErrInvalidTransition) {
+		t.Fatalf("publishing twice: error = %v, want ErrInvalidTransition", err)
+	}
+	if err := event.Reschedule(t0); !errors.Is(err, ErrInvalidTransition) {
+		t.Fatalf("rescheduling a published event: error = %v, want ErrInvalidTransition", err)
+	}
+	if !event.PublishedAt().Equal(t0.Add(time.Second)) {
+		t.Fatalf("the first publication time was overwritten: %s", event.PublishedAt())
+	}
+}
+
+func TestAFailedEventStaysPendingAndWaitsLonger(t *testing.T) {
+	tx := processed(t, newTransaction(t, nil))
+	event, err := NewWagerTransactionProcessedEvent(id(20), tx, "corr-1", "", t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := event.Reschedule(t0.Add(time.Minute)); err != nil {
+		t.Fatalf("Reschedule: %v", err)
+	}
+
+	if event.Status() != OutboxPending || !event.NextAttemptAt().Equal(t0.Add(time.Minute)) {
+		t.Fatalf("status %s, next attempt %s", event.Status(), event.NextAttemptAt())
+	}
+	if event.ID() != id(20) {
+		t.Fatal("rescheduling must not change the event id: a republication has to carry the same one")
+	}
+}

@@ -1034,34 +1034,65 @@ sobre um saldo que precisa continuar valendo no commit. E a outbox vem **depois*
 porque o payload carrega `balanceAfter` e `walletVersion` — valores que só existem no passo 5.
 ### 4.6 Outbox
 
-**Escrita** — na transação do domínio, sempre. É o §5.4: evento só depois do commit.
+**Escrita** — na transação do domínio, sempre. O repositório recusa o `Insert` fora de um
+`Atomic` (`persistence.ErrNoTransaction`): um evento gravado sozinho poderia sobreviver à mudança
+que descreve, que é exatamente a publicação antes do commit que a outbox existe para impedir.
 
-**Publicação** — worker separado, laço periódico sobre o banco:
+**Publicação** — um cronjob (`libs/cronjob`, ver §4.1) em toda instância do
+worker. Cada tick chama `PublishDue`, que faz três coisas em três passos curtos, **nenhum deles
+segurando transação durante a chamada de rede**:
 
-```sql
-UPDATE outbox_events SET locked_by = $1, locked_at = now(), attempts = attempts + 1
-WHERE event_id IN (
-    SELECT event_id FROM outbox_events
-    WHERE status = 'PENDING' AND next_attempt_at <= now()
-    ORDER BY occurred_at
-    FOR UPDATE SKIP LOCKED
-    LIMIT $2
-)
-RETURNING *;
+```
+1. CLAIM     UPDATE ... SET locked_by, locked_at, attempts = attempts + 1
+             WHERE event_id IN ( SELECT ... FOR UPDATE OF o SKIP LOCKED LIMIT n )   -- commit próprio
+2. PUBLISH   SendMessage na fila FIFO de eventos                                     -- fora de transação
+3. RECORD    UPDATE ... SET status = 'PUBLISHED'   (ou, se falhou: next_attempt_at em backoff)
 ```
 
-`FOR UPDATE SKIP LOCKED` é o que permite **N publishers sem coordenação externa**: cada um leva
-um lote distinto, nenhum espera o outro. É a resposta ao §11 (múltiplos publishers, disputa por
-registros).
+O que faz isso correto com **N publishers e nenhum coordenador**:
 
-- **Sucesso:** `status='PUBLISHED'`, `published_at=now()`.
-- **Falha:** volta a `PENDING` com `next_attempt_at` em backoff exponencial.
-- **Publisher que morreu no meio:** a linha fica `PENDING` com `locked_at` antigo. Um lease
-  expirado (> 5 min) é retomado por quem vier — é a recuperação de trabalho abandonado.
-- **Interrupção entre publicar e confirmar:** o evento vai duas vezes com o **mesmo
-  `event_id`**. É por isso que ele é a PK e não um serial: `MessageDeduplicationId = eventId`
-  corta a duplicata na FIFO, e o consumidor dedupe pelo mesmo campo. At-least-once na saída é
-  assumido, não escondido.
+- **`SKIP LOCKED`**: cada publisher leva um lote diferente, ninguém espera ninguém.
+- **Lease**: um evento reservado só volta a ser elegível quando `locked_at` ficou mais velho que
+  `OUTBOX_LEASE`. É a recuperação do trabalho abandonado: o publisher que morreu segurando um lote
+  perde os eventos para o próximo tick de qualquer instância.
+- **Ordem por agregado**: um evento **não é elegível enquanto houver um anterior do mesmo
+  agregado ainda `PENDING`** (esperando retry ou reservado por outro publisher). Sem isso, dois
+  publishers poderiam pegar dois eventos da mesma carteira e enviar o mais novo primeiro. O preço,
+  declarado: um evento que falha segura os que vêm atrás **só do próprio agregado**, pelo tempo do
+  seu backoff.
+- **Backoff**: `OUTBOX_BACKOFF_BASE` dobrado a cada tentativa até `OUTBOX_BACKOFF_MAX`, com
+  espalhamento de ±20% para instâncias que falharam juntas não tentarem juntas. **Nunca desiste**:
+  o evento fica `PENDING` com espera limitada, porque perder um evento cujo registro foi
+  confirmado é exatamente o que o SPEC proíbe.
+- **Republicação**: se o publisher morre entre o broker aceitar e a linha ser marcada, a linha
+  continua `PENDING`, o lease expira e outro publisher envia **o mesmo `eventId`**. A fila FIFO
+  descarta a segunda cópia dentro da janela de deduplicação (o `MessageDeduplicationId` é o
+  `eventId`), e o consumidor deduplica por ele além da janela. É at-least-once assumido, não
+  escondido.
+- **`Complete` idempotente**: `WHERE status = 'PENDING'`. Dois publishers que receberam o mesmo
+  evento após um lease expirar não brigam: o segundo encontra a linha pronta e isso não é erro.
+- **`Release` só se ainda for meu** (`locked_by = $publisher`): quem perdeu o lease não
+  sobrescreve o que o outro decidiu.
+
+Configuração (`.env.example`): `OUTBOX_POLL_INTERVAL`, `OUTBOX_BATCH_SIZE`, `OUTBOX_LEASE`,
+`OUTBOX_BACKOFF_BASE`, `OUTBOX_BACKOFF_MAX`. O lease precisa exceder o tempo de publicar um lote.
+
+**Contrato de saída.** Destino: fila FIFO `wager-events.fifo`, com DLQ `wager-events-dlq.fifo`
+(`maxReceiveCount` 5), provisionadas por `docker/localstack/init-queues.sh` e por
+`infra/modules/queue`.
+
+| Campo do SQS | Valor | Para quê |
+|---|---|---|
+| `MessageGroupId` | `aggregateId` | os eventos de um agregado chegam na ordem em que foram enviados |
+| `MessageDeduplicationId` | `eventId` | uma republicação é reconhecida e descartada pela fila |
+| `MessageBody` | o envelope (§2.8), **exatamente como gravado** | snapshot imutável |
+| atributos | `eventType`, `eventId`, `correlationId`, `otel-*` | roteamento e rastreio sem parsear o corpo |
+
+**Limitação declarada.** A ordem por agregado vale por `aggregateId`. A carteira e a transação
+são agregados diferentes, então a ordem **entre** um `WagerTransactionProcessed` e o
+`WalletBalanceChanged` da mesma operação não é garantida; o consumidor que precisa ordenar
+mudanças de saldo usa `walletVersion`, que existe para isso.
+
 ### 4.7 Filas
 
 | Fila | Papel | `MessageGroupId` | `MessageDeduplicationId` |

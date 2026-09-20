@@ -83,6 +83,9 @@ module "ecs" {
   queue_arn                = module.queue.queue_arn
   queue_visibility_timeout = module.queue.visibility_timeout_seconds
 
+  events_queue_url = module.queue.events_queue_url
+  events_queue_arn = module.queue.events_queue_arn
+
   keycloak_issuer            = var.keycloak_issuer
   keycloak_audience          = var.keycloak_audience
   keycloak_client_id         = var.keycloak_client_id

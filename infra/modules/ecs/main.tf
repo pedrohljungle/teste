@@ -108,6 +108,14 @@ data "aws_iam_policy_document" "publish" {
   }
 }
 
+# Only the worker publishes integration events: the outbox publisher runs there.
+data "aws_iam_policy_document" "publish_events" {
+  statement {
+    actions   = ["sqs:SendMessage", "sqs:GetQueueAttributes", "sqs:GetQueueUrl"]
+    resources = [var.events_queue_arn]
+  }
+}
+
 data "aws_iam_policy_document" "consume" {
   statement {
     actions = [
@@ -125,6 +133,12 @@ resource "aws_iam_role_policy" "server_publish" {
   name   = "${var.name}-server-publish"
   role   = aws_iam_role.server.id
   policy = data.aws_iam_policy_document.publish.json
+}
+
+resource "aws_iam_role_policy" "worker_publish_events" {
+  name   = "${var.name}-worker-publish-events"
+  role   = aws_iam_role.worker.id
+  policy = data.aws_iam_policy_document.publish_events.json
 }
 
 resource "aws_iam_role_policy" "worker_consume" {
@@ -147,6 +161,7 @@ locals {
     { name = "KEYCLOAK_AUDIENCE", value = var.keycloak_audience },
     { name = "AWS_REGION", value = var.region },
     { name = "SQS_QUEUE_URL", value = var.queue_url },
+    { name = "SQS_EVENTS_QUEUE_URL", value = var.events_queue_url },
     { name = "OTEL_EXPORTER_OTLP_ENDPOINT", value = var.otlp_endpoint },
     { name = "OTEL_TRACES_SAMPLER_ARG", value = tostring(var.trace_sample_ratio) },
   ]

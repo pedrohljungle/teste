@@ -19,6 +19,8 @@ var Module = fx.Module("config",
 		func(c Config) Worker { return c.Worker },
 		func(c Config) Telemetry { return c.Telemetry },
 		func(c Config) AWS { return c.AWS },
+		func(c Config) Events { return c.Events },
+		func(c Config) Outbox { return c.Outbox },
 	),
 )
 
@@ -37,6 +39,8 @@ type Config struct {
 	Worker           Worker
 	Telemetry        Telemetry
 	AWS              AWS
+	Events           Events
+	Outbox           Outbox
 	// DocsEnabled registers the API documentation and the OpenAPI document. It is off by
 	// default: the documentation describes every route and the shape of every payload, which
 	// is a map nobody needs handed to them in production.
@@ -119,6 +123,37 @@ func (w Worker) Name() string {
 	return w.QueueURL
 }
 
+// Events holds where the integration events are published.
+type Events struct {
+	// QueueURL is the FIFO queue the outbox publisher sends to. Downstream consumers read it.
+	QueueURL string
+}
+
+// Name is the queue name, derived from the URL, for spans and logs.
+func (e Events) Name() string {
+	if idx := strings.LastIndex(e.QueueURL, "/"); idx >= 0 {
+		return e.QueueURL[idx+1:]
+	}
+	return e.QueueURL
+}
+
+// Outbox holds the settings of the publisher that drains the outbox.
+type Outbox struct {
+	// PollInterval is how often the publisher looks for due events when the last look found
+	// none. A look that finds work is followed by another at once.
+	PollInterval time.Duration
+	// BatchSize is how many events one publisher claims at a time.
+	BatchSize int
+	// Lease is how long a claimed event stays reserved for its publisher. A publisher that died
+	// holding events loses them to another one when the lease runs out, which is what recovers
+	// abandoned work. It must exceed the time to publish a batch.
+	Lease time.Duration
+	// BackoffBase and BackoffMax bound the wait before an event that failed to publish is tried
+	// again: BackoffBase doubled on every attempt, up to BackoffMax.
+	BackoffBase time.Duration
+	BackoffMax  time.Duration
+}
+
 // AWS holds the SDK settings. Endpoint is only set outside AWS, to point the SDK at a local
 // emulator; empty means the real service.
 type AWS struct {
@@ -155,6 +190,11 @@ func Load() (Config, error) {
 	v.SetDefault("OTEL_TRACES_SAMPLER_ARG", 1.0)
 	v.SetDefault("OTEL_METRIC_EXPORT_INTERVAL", "60s")
 	v.SetDefault("DOCS_ENABLED", false)
+	v.SetDefault("OUTBOX_POLL_INTERVAL", "1s")
+	v.SetDefault("OUTBOX_BATCH_SIZE", 25)
+	v.SetDefault("OUTBOX_LEASE", "60s")
+	v.SetDefault("OUTBOX_BACKOFF_BASE", "1s")
+	v.SetDefault("OUTBOX_BACKOFF_MAX", "5m")
 
 	cfg := Config{
 		Env:              v.GetString("APP_ENV"),
@@ -174,6 +214,14 @@ func Load() (Config, error) {
 			PollTimeout:       v.GetDuration("WORKER_POLL_TIMEOUT"),
 			VisibilityTimeout: v.GetInt32("WORKER_VISIBILITY_TIMEOUT"),
 			Concurrency:       v.GetInt("WORKER_CONCURRENCY"),
+		},
+		Events: Events{QueueURL: v.GetString("SQS_EVENTS_QUEUE_URL")},
+		Outbox: Outbox{
+			PollInterval: v.GetDuration("OUTBOX_POLL_INTERVAL"),
+			BatchSize:    v.GetInt("OUTBOX_BATCH_SIZE"),
+			Lease:        v.GetDuration("OUTBOX_LEASE"),
+			BackoffBase:  v.GetDuration("OUTBOX_BACKOFF_BASE"),
+			BackoffMax:   v.GetDuration("OUTBOX_BACKOFF_MAX"),
 		},
 		DocsEnabled: v.GetBool("DOCS_ENABLED"),
 		AWS: AWS{
@@ -206,6 +254,23 @@ func (c Config) validate() error {
 	}
 	if c.Worker.Concurrency < 1 {
 		return errors.New("WORKER_CONCURRENCY must be at least 1")
+	}
+	if c.Events.QueueURL == "" {
+		return errors.New("SQS_EVENTS_QUEUE_URL is required")
+	}
+	return c.Outbox.validate()
+}
+
+func (o Outbox) validate() error {
+	switch {
+	case o.PollInterval <= 0:
+		return errors.New("OUTBOX_POLL_INTERVAL must be positive")
+	case o.BatchSize < 1:
+		return errors.New("OUTBOX_BATCH_SIZE must be at least 1")
+	case o.Lease <= 0:
+		return errors.New("OUTBOX_LEASE must be positive")
+	case o.BackoffBase <= 0 || o.BackoffMax < o.BackoffBase:
+		return errors.New("OUTBOX_BACKOFF_BASE must be positive and OUTBOX_BACKOFF_MAX at least as long")
 	}
 	return nil
 }

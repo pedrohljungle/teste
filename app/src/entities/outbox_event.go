@@ -236,6 +236,30 @@ func newOutboxEvent[T any](eventID uuid.UUID, aggregateType string, aggregateID 
 	}, nil
 }
 
+// MarkPublished records that the event reached the broker. An event publishes once: republishing
+// after a crash between the broker accepting it and this being stored is a second delivery of the
+// same event id, never a second event.
+func (e *OutboxEvent) MarkPublished(at time.Time) error {
+	if e.status != OutboxPending {
+		return fmt.Errorf("%w: only a PENDING event is published, this one is %s", ErrInvalidTransition, e.status)
+	}
+	e.status = OutboxPublished
+	e.publishedAt = at.UTC()
+	e.lockedBy, e.lockedAt = "", time.Time{}
+	return nil
+}
+
+// Reschedule records a failed attempt to publish and sets when the next one is due. The event
+// stays PENDING: a committed event is never given up on, only made to wait longer.
+func (e *OutboxEvent) Reschedule(nextAttemptAt time.Time) error {
+	if e.status != OutboxPending {
+		return fmt.Errorf("%w: only a PENDING event is rescheduled, this one is %s", ErrInvalidTransition, e.status)
+	}
+	e.nextAttemptAt = nextAttemptAt.UTC()
+	e.lockedBy, e.lockedAt = "", time.Time{}
+	return nil
+}
+
 // ID is the stable event id.
 func (e *OutboxEvent) ID() uuid.UUID { return e.id }
 
@@ -271,6 +295,12 @@ func (e *OutboxEvent) Attempts() int { return e.attempts }
 
 // NextAttemptAt is when it is next due for publication.
 func (e *OutboxEvent) NextAttemptAt() time.Time { return e.nextAttemptAt }
+
+// PublishedAt is when the event reached the broker, the zero time before that.
+func (e *OutboxEvent) PublishedAt() time.Time { return e.publishedAt }
+
+// LockedBy is the publisher that holds the event, empty when none does.
+func (e *OutboxEvent) LockedBy() string { return e.lockedBy }
 
 // OutboxEventSnapshot is the persisted shape of an event, as a row of outbox_events.
 type OutboxEventSnapshot struct {

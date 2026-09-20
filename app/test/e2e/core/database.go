@@ -12,17 +12,22 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// DB opens a pool on the suite database, for the steps a scenario cannot take through the API:
+// DB is a pool on the suite database, for the steps a scenario cannot take through the API:
 // seeding rows, and asserting on what the schema itself refuses.
+//
+// It is one pool for the whole suite. A pool per call, closed when its test ended, looks harmless
+// until a scenario reads in a loop: sixty reads open sixty pools, and Postgres runs out of
+// connections in the middle of an assertion.
 func (s *Stack) DB(t *testing.T) *pgxpool.Pool {
 	t.Helper()
 
-	pool, err := pgxpool.New(context.Background(), s.infra.databaseURL)
-	if err != nil {
-		t.Fatalf("open the suite database: %v", err)
+	s.poolOnce.Do(func() {
+		s.pool, s.poolErr = pgxpool.New(context.Background(), s.infra.databaseURL)
+	})
+	if s.poolErr != nil {
+		t.Fatalf("open the suite database: %v", s.poolErr)
 	}
-	t.Cleanup(pool.Close)
-	return pool
+	return s.pool
 }
 
 // ScratchDatabase creates an empty database beside the suite one and returns its URL. It exists

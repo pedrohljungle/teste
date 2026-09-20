@@ -16,6 +16,16 @@ import (
 
 const walletColumns = "id, player_id, currency, balance_minor, version, created_at, updated_at"
 
+// expected is the error a span should record for a read: a lookup that finds nothing is an
+// answer the caller acts on, not a failure of the repository, and logging it as one would bury the
+// real ones.
+func expected(err error) error {
+	if errors.Is(err, walletiface.ErrNotFound) {
+		return nil
+	}
+	return err
+}
+
 var _ walletiface.Repository = (*postgresRepository)(nil)
 
 type postgresRepository struct {
@@ -48,14 +58,14 @@ func (r *postgresRepository) Insert(ctx context.Context, wallet *entities.Wallet
 
 func (r *postgresRepository) Get(ctx context.Context, id uuid.UUID) (wallet *entities.Wallet, err error) {
 	ctx, end := r.obs.Start(ctx, observability.LayerRepository, "wallet.Repository.Get")
-	defer func() { end(err) }()
+	defer func() { end(expected(err)) }()
 
 	return r.read(ctx, id, "")
 }
 
 func (r *postgresRepository) GetForUpdate(ctx context.Context, id uuid.UUID) (wallet *entities.Wallet, err error) {
 	ctx, end := r.obs.Start(ctx, observability.LayerRepository, "wallet.Repository.GetForUpdate")
-	defer func() { end(err) }()
+	defer func() { end(expected(err)) }()
 
 	if err := r.db.RequireTransaction(ctx); err != nil {
 		return nil, err

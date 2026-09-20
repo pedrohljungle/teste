@@ -20,6 +20,8 @@ x-app-env: &app-env
   AWS_ACCESS_KEY_ID: test
   AWS_SECRET_ACCESS_KEY: test
   SQS_QUEUE_URL: http://localstack:4566/000000000000/pedro-test-tasks
+  # Where the outbox publisher sends the integration events. FIFO, created by the init script.
+  SQS_EVENTS_QUEUE_URL: http://localstack:4566/000000000000/wager-events.fifo
   # The application speaks OTLP straight to the observability backend: no collector in
   # between.
   OTEL_EXPORTER_OTLP_ENDPOINT: observability:4317

@@ -127,6 +127,16 @@ variable "queue_arn" {
   type        = string
 }
 
+variable "events_queue_url" {
+  description = "URL of the FIFO queue of integration events, which the outbox publisher sends to."
+  type        = string
+}
+
+variable "events_queue_arn" {
+  description = "ARN of the queue of integration events, for the worker policy."
+  type        = string
+}
+
 variable "queue_visibility_timeout" {
   description = "Visibility timeout of the queue, mirrored into the worker configuration."
   type        = number

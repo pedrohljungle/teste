@@ -43,15 +43,16 @@ func openWallet(t *testing.T, balance string) entities.WalletOpening {
 	return opening
 }
 
-// storeOpening writes everything an opening produces. It has to run inside a unit of work.
-func storeOpening(t *testing.T, ctx context.Context, opening entities.WalletOpening) {
+// storeOpening writes everything an opening produces and returns the event it wrote, nil for an
+// opening with nothing to publish. It has to run inside a unit of work.
+func storeOpening(t *testing.T, ctx context.Context, opening entities.WalletOpening) *entities.OutboxEvent {
 	t.Helper()
 
 	if err := stack.Repos.Wallets.Insert(ctx, opening.Wallet); err != nil {
 		t.Fatalf("store the wallet: %v", err)
 	}
 	if opening.Transaction == nil {
-		return
+		return nil
 	}
 	if err := stack.Repos.Wagering.Insert(ctx, opening.Transaction); err != nil {
 		t.Fatalf("store the opening transaction: %v", err)
@@ -59,22 +60,26 @@ func storeOpening(t *testing.T, ctx context.Context, opening entities.WalletOpen
 	if err := stack.Repos.Wallets.InsertEntry(ctx, *opening.Entry); err != nil {
 		t.Fatalf("store the ledger entry: %v", err)
 	}
-	if err := stack.Repos.Outbox.Insert(ctx, processedEvent(t, opening.Transaction)); err != nil {
+	event := processedEvent(t, opening.Transaction)
+	if err := stack.Repos.Outbox.Insert(ctx, event); err != nil {
 		t.Fatalf("store the event: %v", err)
 	}
+	return event
 }
 
-// writeOpening stores an opening in one committed unit of work.
-func writeOpening(t *testing.T, opening entities.WalletOpening) {
+// writeOpening stores an opening in one committed unit of work and returns the event it wrote.
+func writeOpening(t *testing.T, opening entities.WalletOpening) *entities.OutboxEvent {
 	t.Helper()
 
+	var event *entities.OutboxEvent
 	err := stack.Repos.UnitOfWork.Atomic(context.Background(), func(ctx context.Context) error {
-		storeOpening(t, ctx, opening)
+		event = storeOpening(t, ctx, opening)
 		return nil
 	})
 	if err != nil {
 		t.Fatalf("write the opening: %v", err)
 	}
+	return event
 }
 
 // requireNothingStored asserts that no trace of an opening reached the database.

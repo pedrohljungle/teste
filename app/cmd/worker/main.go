@@ -20,10 +20,12 @@ import (
 
 	"github.com/estrategiahq/pedro-test/app/src/handlers"
 	"github.com/estrategiahq/pedro-test/app/src/handlers/health"
+	outboxhandler "github.com/estrategiahq/pedro-test/app/src/handlers/outbox"
 	"github.com/estrategiahq/pedro-test/app/src/libs/appinfo"
 	"github.com/estrategiahq/pedro-test/app/src/libs/auth"
 	"github.com/estrategiahq/pedro-test/app/src/libs/bootstrap"
 	"github.com/estrategiahq/pedro-test/app/src/libs/config"
+	"github.com/estrategiahq/pedro-test/app/src/libs/cronjob"
 	"github.com/estrategiahq/pedro-test/app/src/libs/jobrunner"
 	"github.com/estrategiahq/pedro-test/app/src/libs/observability"
 	"github.com/estrategiahq/pedro-test/app/src/repositories/queue"
@@ -49,9 +51,11 @@ func options() []fx.Option {
 		auth.WorkerModule,
 		handlers.Module,
 		jobrunner.Module,
+		cronjob.Module,
 
 		fx.Invoke(prepareWorkers),
 		fx.Invoke(jobrunner.Run),
+		fx.Invoke(cronjob.Run),
 
 		fx.Provide(newProbeEcho),
 		fx.Invoke(probeRoutes),
@@ -69,22 +73,22 @@ func options() []fx.Option {
 type workerParams struct {
 	fx.In
 
-	Runner  *jobrunner.Runner
-	Queue   *queue.SQS
-	Account *auth.ServiceAccount
+	Runner   *jobrunner.Runner
+	Queue    *queue.SQS
+	Account  *auth.ServiceAccount
+	Cronjobs *cronjob.Runner
+	Outbox   *outboxhandler.CronjobHandler
 }
 
-// prepareWorkers is the map of what this process consumes. It mirrors serverRoutes in
-// cmd/server: each domain registers itself on the runtime.
+// prepareWorkers is the map of what this process does. It mirrors serverRoutes in cmd/server:
+// each domain registers itself on the runtime it needs.
 //
-// Nothing is registered yet, because this repository carries no domain. A domain registers
-// itself in one line:
-//
-//	<domain>.PrepareWorker(p.Runner, p.Queue, p.Jobs)
-//
-// where PrepareWorker lives in handlers/<domain> and calls Runner.Register. Until then the
-// worker boots, warns that it consumes nothing, and answers its probe.
+// A queue consumer registers with PrepareWorker, on the job runner. A recurring task registers
+// with PrepareCronjob, on the cronjob runner. The outbox publisher is the first of the second
+// kind: it is a tick over the database and has no queue to poll.
 func prepareWorkers(lc fx.Lifecycle, p workerParams, obs *observability.Observer) {
+	outboxhandler.PrepareCronjob(p.Cronjobs, p.Outbox)
+
 	// Asking for the service account token at boot surfaces a bad credential while the deploy
 	// is still on someone's screen, instead of on the first message at 3am.
 	lc.Append(fx.Hook{

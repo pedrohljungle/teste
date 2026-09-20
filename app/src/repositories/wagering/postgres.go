@@ -40,6 +40,16 @@ const (
 	indexSingleReversal   = "uk_wager_single_reversal"
 )
 
+// expected is the error a span should record for a read: a lookup that finds nothing is an
+// answer the caller acts on, not a failure of the repository, and logging it as one would bury the
+// real ones.
+func expected(err error) error {
+	if errors.Is(err, wageringiface.ErrNotFound) {
+		return nil
+	}
+	return err
+}
+
 var _ wageringiface.Repository = (*postgresRepository)(nil)
 
 type postgresRepository struct {
@@ -119,14 +129,14 @@ func (r *postgresRepository) Update(ctx context.Context, transaction *entities.W
 
 func (r *postgresRepository) Get(ctx context.Context, id uuid.UUID) (transaction *entities.WagerTransaction, err error) {
 	ctx, end := r.obs.Start(ctx, observability.LayerRepository, "wagering.Repository.Get")
-	defer func() { end(err) }()
+	defer func() { end(expected(err)) }()
 
 	return r.one(ctx, selectTransaction+"WHERE id = $1", id)
 }
 
 func (r *postgresRepository) FindByExternal(ctx context.Context, providerID, externalTransactionID string) (transaction *entities.WagerTransaction, err error) {
 	ctx, end := r.obs.Start(ctx, observability.LayerRepository, "wagering.Repository.FindByExternal")
-	defer func() { end(err) }()
+	defer func() { end(expected(err)) }()
 
 	return r.one(ctx, selectTransaction+"WHERE provider_id = $1 AND external_transaction_id = $2 AND origin = 'EXTERNAL'",
 		providerID, externalTransactionID)
@@ -134,7 +144,7 @@ func (r *postgresRepository) FindByExternal(ctx context.Context, providerID, ext
 
 func (r *postgresRepository) FindByKey(ctx context.Context, providerID, idempotencyKey string) (transaction *entities.WagerTransaction, err error) {
 	ctx, end := r.obs.Start(ctx, observability.LayerRepository, "wagering.Repository.FindByKey")
-	defer func() { end(err) }()
+	defer func() { end(expected(err)) }()
 
 	return r.one(ctx, selectTransaction+"WHERE provider_id = $1 AND idempotency_key = $2 AND origin = 'EXTERNAL'",
 		providerID, idempotencyKey)
