@@ -66,6 +66,71 @@ const docTemplate = `{
                 }
             }
         },
+        "/providers/{providerId}/wagering/transactions/{externalTransactionId}": {
+            "get": {
+                "security": [
+                    {
+                        "OAuth2Password": []
+                    }
+                ],
+                "description": "O providerId do caminho precisa ser o do token: outro é 403, decidido antes de tocar em qualquer dado.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "wagering"
+                ],
+                "summary": "Lê uma transação pelo id do provedor",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Id do provedor, o mesmo do token",
+                        "name": "providerId",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Id que o provedor deu à transação",
+                        "name": "externalTransactionId",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/wagering.TransactionDetail"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "$ref": "#/definitions/structs.APIError"
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "$ref": "#/definitions/structs.APIError"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/structs.APIError"
+                        }
+                    },
+                    "503": {
+                        "description": "Service Unavailable",
+                        "schema": {
+                            "$ref": "#/definitions/structs.APIError"
+                        }
+                    }
+                }
+            }
+        },
         "/wagering/transactions": {
             "post": {
                 "security": [
@@ -145,8 +210,66 @@ const docTemplate = `{
                             "$ref": "#/definitions/wagering.TransactionResponse"
                         }
                     },
-                    "501": {
-                        "description": "Not Implemented",
+                    "503": {
+                        "description": "Service Unavailable",
+                        "schema": {
+                            "$ref": "#/definitions/structs.APIError"
+                        }
+                    }
+                }
+            }
+        },
+        "/wagering/transactions/{transactionId}": {
+            "get": {
+                "security": [
+                    {
+                        "OAuth2Password": []
+                    }
+                ],
+                "description": "Permite acompanhar uma pendência (tentativas, próxima olhada e expiração) e consultar o código de uma rejeição ou falha. Uma transação de outro provedor responde 404, exatamente como uma que não existe: perguntar não revela de quem é.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "wagering"
+                ],
+                "summary": "Lê uma transação pelo id",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Id da transação",
+                        "name": "transactionId",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/wagering.TransactionDetail"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/structs.APIError"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "$ref": "#/definitions/structs.APIError"
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "$ref": "#/definitions/structs.APIError"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
                         "schema": {
                             "$ref": "#/definitions/structs.APIError"
                         }
@@ -216,6 +339,210 @@ const docTemplate = `{
                     },
                     "409": {
                         "description": "Conflict",
+                        "schema": {
+                            "$ref": "#/definitions/structs.APIError"
+                        }
+                    },
+                    "503": {
+                        "description": "Service Unavailable",
+                        "schema": {
+                            "$ref": "#/definitions/structs.APIError"
+                        }
+                    }
+                }
+            }
+        },
+        "/wallets/{walletId}": {
+            "get": {
+                "security": [
+                    {
+                        "OAuth2Password": []
+                    }
+                ],
+                "description": "Devolve o saldo e a versão atuais. Restrita ao serviço interno.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "wallets"
+                ],
+                "summary": "Lê uma carteira",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Id da carteira",
+                        "name": "walletId",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/wallet.Response"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/structs.APIError"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "$ref": "#/definitions/structs.APIError"
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "$ref": "#/definitions/structs.APIError"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/structs.APIError"
+                        }
+                    },
+                    "503": {
+                        "description": "Service Unavailable",
+                        "schema": {
+                            "$ref": "#/definitions/structs.APIError"
+                        }
+                    }
+                }
+            }
+        },
+        "/wallets/{walletId}/ledger": {
+            "get": {
+                "security": [
+                    {
+                        "OAuth2Password": []
+                    }
+                ],
+                "description": "Paginado por cursor opaco, do lançamento mais antigo para o mais novo. A ordem é a posição que o banco deu a cada lançamento, que não muda nem se repete: um lançamento gravado enquanto o cliente lê aparece numa página posterior, e nenhum é pulado nem visto duas vezes. Restrita ao serviço interno.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "wallets"
+                ],
+                "summary": "Lê o ledger de uma carteira",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Id da carteira",
+                        "name": "walletId",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Cursor devolvido pela página anterior",
+                        "name": "cursor",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Tamanho da página, de 1 a 200. Padrão 50.",
+                        "name": "limit",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/wallet.LedgerResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/structs.APIError"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "$ref": "#/definitions/structs.APIError"
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "$ref": "#/definitions/structs.APIError"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/structs.APIError"
+                        }
+                    },
+                    "503": {
+                        "description": "Service Unavailable",
+                        "schema": {
+                            "$ref": "#/definitions/structs.APIError"
+                        }
+                    }
+                }
+            }
+        },
+        "/wallets/{walletId}/reconciliation": {
+            "post": {
+                "security": [
+                    {
+                        "OAuth2Password": []
+                    }
+                ],
+                "description": "Reconstrói o saldo a partir do ledger, abertura incluída, e compara com o saldo gravado, os dois lidos de uma mesma visão consistente dos dados. Não altera nada: uma divergência vai na resposta, no log e numa métrica, e nunca é corrigida. Restrita ao serviço interno.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "wallets"
+                ],
+                "summary": "Reconcilia uma carteira",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Id da carteira",
+                        "name": "walletId",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/wallet.ReconciliationResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/structs.APIError"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "$ref": "#/definitions/structs.APIError"
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "$ref": "#/definitions/structs.APIError"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
                         "schema": {
                             "$ref": "#/definitions/structs.APIError"
                         }
@@ -350,6 +677,99 @@ const docTemplate = `{
                 }
             }
         },
+        "wagering.TransactionDetail": {
+            "type": "object",
+            "properties": {
+                "balance": {
+                    "$ref": "#/definitions/structs.MoneyDTO"
+                },
+                "createdAt": {
+                    "type": "string",
+                    "example": "2026-09-08T12:00:00.000Z"
+                },
+                "expiresAt": {
+                    "type": "string",
+                    "example": "2026-09-09T12:00:00.000Z"
+                },
+                "externalTransactionId": {
+                    "type": "string",
+                    "example": "transaction-123"
+                },
+                "failureCode": {
+                    "type": "string",
+                    "example": "INSUFFICIENT_FUNDS"
+                },
+                "gameId": {
+                    "type": "string",
+                    "example": "fortune-chimp"
+                },
+                "kind": {
+                    "type": "string",
+                    "enum": [
+                        "BET",
+                        "WIN",
+                        "LOSS",
+                        "REFUND",
+                        "ROLLBACK"
+                    ],
+                    "example": "BET"
+                },
+                "money": {
+                    "$ref": "#/definitions/structs.MoneyDTO"
+                },
+                "nextAttemptAt": {
+                    "type": "string",
+                    "example": "2026-09-08T12:00:05.000Z"
+                },
+                "playerId": {
+                    "type": "string",
+                    "example": "0192f28f-5dc0-7d58-bdb2-814ad6a0f4a1"
+                },
+                "providerId": {
+                    "type": "string",
+                    "example": "provider-a"
+                },
+                "referenceAttempts": {
+                    "type": "integer",
+                    "example": 3
+                },
+                "referenceExternalTransactionId": {
+                    "type": "string",
+                    "example": "transaction-122"
+                },
+                "roundId": {
+                    "type": "string",
+                    "example": "round-987"
+                },
+                "settledAt": {
+                    "type": "string",
+                    "example": "2026-09-08T12:00:00.000Z"
+                },
+                "status": {
+                    "type": "string",
+                    "enum": [
+                        "PENDING",
+                        "PENDING_REFERENCE",
+                        "PROCESSED",
+                        "REJECTED",
+                        "FAILED"
+                    ],
+                    "example": "PROCESSED"
+                },
+                "transactionId": {
+                    "type": "string",
+                    "example": "0192f298-345e-7e38-af88-e43f851a819d"
+                },
+                "updatedAt": {
+                    "type": "string",
+                    "example": "2026-09-08T12:00:00.000Z"
+                },
+                "walletId": {
+                    "type": "string",
+                    "example": "0192f291-27dd-7d3f-8071-5f8685deef37"
+                }
+            }
+        },
         "wagering.TransactionResponse": {
             "type": "object",
             "properties": {
@@ -380,6 +800,56 @@ const docTemplate = `{
                 }
             }
         },
+        "wallet.LedgerEntryResponse": {
+            "type": "object",
+            "properties": {
+                "balanceAfter": {
+                    "$ref": "#/definitions/structs.MoneyDTO"
+                },
+                "balanceBefore": {
+                    "$ref": "#/definitions/structs.MoneyDTO"
+                },
+                "createdAt": {
+                    "type": "string",
+                    "example": "2026-09-08T12:00:00.000Z"
+                },
+                "direction": {
+                    "type": "string",
+                    "enum": [
+                        "DEBIT",
+                        "CREDIT"
+                    ],
+                    "example": "DEBIT"
+                },
+                "id": {
+                    "type": "string",
+                    "example": "0192f2a1-4d3e-7b1a-9c55-0f1e2d3c4b5a"
+                },
+                "money": {
+                    "$ref": "#/definitions/structs.MoneyDTO"
+                },
+                "transactionId": {
+                    "type": "string",
+                    "example": "0192f298-345e-7e38-af88-e43f851a819d"
+                }
+            }
+        },
+        "wallet.LedgerResponse": {
+            "type": "object",
+            "properties": {
+                "entries": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/wallet.LedgerEntryResponse"
+                    }
+                },
+                "nextCursor": {
+                    "description": "NextCursor is absent on the last page. It is opaque: hand it back unchanged.",
+                    "type": "string",
+                    "example": "djEuNDI"
+                }
+            }
+        },
         "wallet.OpenRequest": {
             "type": "object",
             "properties": {
@@ -389,6 +859,37 @@ const docTemplate = `{
                 "playerId": {
                     "type": "string",
                     "example": "0192f28f-5dc0-7d58-bdb2-814ad6a0f4a1"
+                }
+            }
+        },
+        "wallet.ReconciliationResponse": {
+            "type": "object",
+            "properties": {
+                "calculatedBalance": {
+                    "$ref": "#/definitions/structs.MoneyDTO"
+                },
+                "checkedEntries": {
+                    "type": "integer",
+                    "example": 2
+                },
+                "consistent": {
+                    "type": "boolean",
+                    "example": true
+                },
+                "difference": {
+                    "description": "Difference is the stored balance minus the calculated one.",
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/structs.MoneyDTO"
+                        }
+                    ]
+                },
+                "storedBalance": {
+                    "$ref": "#/definitions/structs.MoneyDTO"
+                },
+                "walletId": {
+                    "type": "string",
+                    "example": "0192f291-27dd-7d3f-8071-5f8685deef37"
                 }
             }
         },

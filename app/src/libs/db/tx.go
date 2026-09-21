@@ -70,12 +70,25 @@ func (a *Accessor) RequireTransaction(ctx context.Context) error {
 // Do runs fn inside one transaction. A nil return commits; an error or a panic rolls back, and
 // a panic is raised again after the rollback. Called from inside a transaction it joins that
 // one instead of opening another.
-func (a *Accessor) Do(ctx context.Context, fn func(ctx context.Context) error) (err error) {
+func (a *Accessor) Do(ctx context.Context, fn func(ctx context.Context) error) error {
+	return a.run(ctx, pgx.TxOptions{}, fn)
+}
+
+// DoSnapshot runs fn in one read-only transaction that sees a single consistent view of the
+// database, however long it takes and whatever commits meanwhile. It is what a reading that has to
+// compare two numbers needs: read one after the other outside it, and a write in between makes them
+// disagree with each other for no reason but timing. Called from inside a transaction it joins that
+// one, and then the view is whatever that transaction has.
+func (a *Accessor) DoSnapshot(ctx context.Context, fn func(ctx context.Context) error) error {
+	return a.run(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly}, fn)
+}
+
+func (a *Accessor) run(ctx context.Context, options pgx.TxOptions, fn func(ctx context.Context) error) (err error) {
 	if a.InTransaction(ctx) {
 		return fn(ctx)
 	}
 
-	tx, err := a.pool.Begin(ctx)
+	tx, err := a.pool.BeginTx(ctx, options)
 	if err != nil {
 		return fmt.Errorf("begin transaction: %w", Classify(err))
 	}

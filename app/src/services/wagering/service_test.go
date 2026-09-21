@@ -96,6 +96,11 @@ func (u unitOfWork) Atomic(ctx context.Context, fn func(ctx context.Context) err
 	return nil
 }
 
+// Snapshot behaves as Atomic for a double: nothing else runs while a test does.
+func (u unitOfWork) Snapshot(ctx context.Context, fn func(ctx context.Context) error) error {
+	return fn(ctx)
+}
+
 type walletStore struct{ m *memory }
 
 func (s walletStore) Insert(context.Context, *entities.Wallet) error { return nil }
@@ -119,6 +124,12 @@ func (s walletStore) Update(_ context.Context, w *entities.Wallet) error {
 func (s walletStore) InsertEntry(_ context.Context, e entities.LedgerEntry) error {
 	s.m.entries = append(s.m.entries, e.Snapshot())
 	return nil
+}
+func (s walletStore) ListEntries(context.Context, uuid.UUID, int64, int) ([]entities.LedgerEntry, error) {
+	return nil, errors.New("not used by this service")
+}
+func (s walletStore) SumEntries(context.Context, uuid.UUID) (walletiface.Totals, error) {
+	return walletiface.Totals{}, errors.New("not used by this service")
 }
 
 type wageringStore struct{ m *memory }
@@ -173,8 +184,12 @@ func (s wageringStore) ClaimDueReference(_ context.Context, now time.Time) (*ent
 	}
 	return entities.RehydrateWagerTransaction(*chosen)
 }
-func (s wageringStore) Get(context.Context, uuid.UUID) (*entities.WagerTransaction, error) {
-	return nil, wageringiface.ErrNotFound
+func (s wageringStore) Get(_ context.Context, id uuid.UUID) (*entities.WagerTransaction, error) {
+	stored, ok := s.m.transactions[id]
+	if !ok {
+		return nil, wageringiface.ErrNotFound
+	}
+	return entities.RehydrateWagerTransaction(stored)
 }
 func (s wageringStore) FindByExternal(_ context.Context, providerID, external string) (*entities.WagerTransaction, error) {
 	for _, stored := range s.m.transactions {

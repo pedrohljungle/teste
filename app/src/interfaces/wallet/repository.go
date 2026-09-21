@@ -33,4 +33,20 @@ type Repository interface {
 	// transaction already has an entry in that wallet, and with persistence.ErrNoTransaction
 	// outside of a unit of work: an entry stored without its balance change is a corrupt ledger.
 	InsertEntry(ctx context.Context, entry entities.LedgerEntry) error
+
+	// ListEntries reads up to limit ledger entries of a wallet after the given position, oldest
+	// first. Ordering by the position the database assigned makes a page stable: an entry written
+	// later always has a higher position than every entry a client has already seen.
+	ListEntries(ctx context.Context, walletID uuid.UUID, afterSeq int64, limit int) ([]entities.LedgerEntry, error)
+
+	// SumEntries totals a wallet's ledger: how many entries, and the sum of the credits and of the
+	// debits in minor units. It is what a balance is rebuilt from.
+	SumEntries(ctx context.Context, walletID uuid.UUID) (Totals, error)
+}
+
+// Totals is the sum of a wallet's ledger, in minor units.
+type Totals struct {
+	Entries int
+	Credits int64
+	Debits  int64
 }

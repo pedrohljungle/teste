@@ -26,3 +26,10 @@ func (u *unitOfWork) Atomic(ctx context.Context, fn func(ctx context.Context) er
 
 	return u.accessor.Do(ctx, fn)
 }
+
+func (u *unitOfWork) Snapshot(ctx context.Context, fn func(ctx context.Context) error) (err error) {
+	ctx, end := u.obs.Start(ctx, observability.LayerRepository, "persistence.UnitOfWork.Snapshot")
+	defer func() { end(err) }()
+
+	return u.accessor.DoSnapshot(ctx, fn)
+}

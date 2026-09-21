@@ -91,6 +91,76 @@ definitions:
         example: 0192f291-27dd-7d3f-8071-5f8685deef37
         type: string
     type: object
+  wagering.TransactionDetail:
+    properties:
+      balance:
+        $ref: '#/definitions/structs.MoneyDTO'
+      createdAt:
+        example: "2026-09-08T12:00:00.000Z"
+        type: string
+      expiresAt:
+        example: "2026-09-09T12:00:00.000Z"
+        type: string
+      externalTransactionId:
+        example: transaction-123
+        type: string
+      failureCode:
+        example: INSUFFICIENT_FUNDS
+        type: string
+      gameId:
+        example: fortune-chimp
+        type: string
+      kind:
+        enum:
+        - BET
+        - WIN
+        - LOSS
+        - REFUND
+        - ROLLBACK
+        example: BET
+        type: string
+      money:
+        $ref: '#/definitions/structs.MoneyDTO'
+      nextAttemptAt:
+        example: "2026-09-08T12:00:05.000Z"
+        type: string
+      playerId:
+        example: 0192f28f-5dc0-7d58-bdb2-814ad6a0f4a1
+        type: string
+      providerId:
+        example: provider-a
+        type: string
+      referenceAttempts:
+        example: 3
+        type: integer
+      referenceExternalTransactionId:
+        example: transaction-122
+        type: string
+      roundId:
+        example: round-987
+        type: string
+      settledAt:
+        example: "2026-09-08T12:00:00.000Z"
+        type: string
+      status:
+        enum:
+        - PENDING
+        - PENDING_REFERENCE
+        - PROCESSED
+        - REJECTED
+        - FAILED
+        example: PROCESSED
+        type: string
+      transactionId:
+        example: 0192f298-345e-7e38-af88-e43f851a819d
+        type: string
+      updatedAt:
+        example: "2026-09-08T12:00:00.000Z"
+        type: string
+      walletId:
+        example: 0192f291-27dd-7d3f-8071-5f8685deef37
+        type: string
+    type: object
   wagering.TransactionResponse:
     properties:
       balance:
@@ -113,12 +183,68 @@ definitions:
         example: 0192f298-345e-7e38-af88-e43f851a819d
         type: string
     type: object
+  wallet.LedgerEntryResponse:
+    properties:
+      balanceAfter:
+        $ref: '#/definitions/structs.MoneyDTO'
+      balanceBefore:
+        $ref: '#/definitions/structs.MoneyDTO'
+      createdAt:
+        example: "2026-09-08T12:00:00.000Z"
+        type: string
+      direction:
+        enum:
+        - DEBIT
+        - CREDIT
+        example: DEBIT
+        type: string
+      id:
+        example: 0192f2a1-4d3e-7b1a-9c55-0f1e2d3c4b5a
+        type: string
+      money:
+        $ref: '#/definitions/structs.MoneyDTO'
+      transactionId:
+        example: 0192f298-345e-7e38-af88-e43f851a819d
+        type: string
+    type: object
+  wallet.LedgerResponse:
+    properties:
+      entries:
+        items:
+          $ref: '#/definitions/wallet.LedgerEntryResponse'
+        type: array
+      nextCursor:
+        description: 'NextCursor is absent on the last page. It is opaque: hand it
+          back unchanged.'
+        example: djEuNDI
+        type: string
+    type: object
   wallet.OpenRequest:
     properties:
       initialBalance:
         $ref: '#/definitions/structs.MoneyDTO'
       playerId:
         example: 0192f28f-5dc0-7d58-bdb2-814ad6a0f4a1
+        type: string
+    type: object
+  wallet.ReconciliationResponse:
+    properties:
+      calculatedBalance:
+        $ref: '#/definitions/structs.MoneyDTO'
+      checkedEntries:
+        example: 2
+        type: integer
+      consistent:
+        example: true
+        type: boolean
+      difference:
+        allOf:
+        - $ref: '#/definitions/structs.MoneyDTO'
+        description: Difference is the stored balance minus the calculated one.
+      storedBalance:
+        $ref: '#/definitions/structs.MoneyDTO'
+      walletId:
+        example: 0192f291-27dd-7d3f-8071-5f8685deef37
         type: string
     type: object
   wallet.Response:
@@ -176,6 +302,49 @@ paths:
       summary: Quem sou eu
       tags:
       - identity
+  /providers/{providerId}/wagering/transactions/{externalTransactionId}:
+    get:
+      description: 'O providerId do caminho precisa ser o do token: outro é 403, decidido
+        antes de tocar em qualquer dado.'
+      parameters:
+      - description: Id do provedor, o mesmo do token
+        in: path
+        name: providerId
+        required: true
+        type: string
+      - description: Id que o provedor deu à transação
+        in: path
+        name: externalTransactionId
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/wagering.TransactionDetail'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/structs.APIError'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/structs.APIError'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/structs.APIError'
+        "503":
+          description: Service Unavailable
+          schema:
+            $ref: '#/definitions/structs.APIError'
+      security:
+      - OAuth2Password: []
+      summary: Lê uma transação pelo id do provedor
+      tags:
+      - wagering
   /wagering/transactions:
     post:
       consumes:
@@ -226,8 +395,48 @@ paths:
           description: Unprocessable Entity
           schema:
             $ref: '#/definitions/wagering.TransactionResponse'
-        "501":
-          description: Not Implemented
+        "503":
+          description: Service Unavailable
+          schema:
+            $ref: '#/definitions/structs.APIError'
+      security:
+      - OAuth2Password: []
+      summary: Envia uma operação de um provedor
+      tags:
+      - wagering
+  /wagering/transactions/{transactionId}:
+    get:
+      description: 'Permite acompanhar uma pendência (tentativas, próxima olhada e
+        expiração) e consultar o código de uma rejeição ou falha. Uma transação de
+        outro provedor responde 404, exatamente como uma que não existe: perguntar
+        não revela de quem é.'
+      parameters:
+      - description: Id da transação
+        in: path
+        name: transactionId
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/wagering.TransactionDetail'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/structs.APIError'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/structs.APIError'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/structs.APIError'
+        "404":
+          description: Not Found
           schema:
             $ref: '#/definitions/structs.APIError'
         "503":
@@ -236,7 +445,7 @@ paths:
             $ref: '#/definitions/structs.APIError'
       security:
       - OAuth2Password: []
-      summary: Envia uma operação de um provedor
+      summary: Lê uma transação pelo id
       tags:
       - wagering
   /wallets:
@@ -283,6 +492,143 @@ paths:
       security:
       - OAuth2Password: []
       summary: Abre a carteira de um jogador
+      tags:
+      - wallets
+  /wallets/{walletId}:
+    get:
+      description: Devolve o saldo e a versão atuais. Restrita ao serviço interno.
+      parameters:
+      - description: Id da carteira
+        in: path
+        name: walletId
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/wallet.Response'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/structs.APIError'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/structs.APIError'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/structs.APIError'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/structs.APIError'
+        "503":
+          description: Service Unavailable
+          schema:
+            $ref: '#/definitions/structs.APIError'
+      security:
+      - OAuth2Password: []
+      summary: Lê uma carteira
+      tags:
+      - wallets
+  /wallets/{walletId}/ledger:
+    get:
+      description: 'Paginado por cursor opaco, do lançamento mais antigo para o mais
+        novo. A ordem é a posição que o banco deu a cada lançamento, que não muda
+        nem se repete: um lançamento gravado enquanto o cliente lê aparece numa página
+        posterior, e nenhum é pulado nem visto duas vezes. Restrita ao serviço interno.'
+      parameters:
+      - description: Id da carteira
+        in: path
+        name: walletId
+        required: true
+        type: string
+      - description: Cursor devolvido pela página anterior
+        in: query
+        name: cursor
+        type: string
+      - description: Tamanho da página, de 1 a 200. Padrão 50.
+        in: query
+        name: limit
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/wallet.LedgerResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/structs.APIError'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/structs.APIError'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/structs.APIError'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/structs.APIError'
+        "503":
+          description: Service Unavailable
+          schema:
+            $ref: '#/definitions/structs.APIError'
+      security:
+      - OAuth2Password: []
+      summary: Lê o ledger de uma carteira
+      tags:
+      - wallets
+  /wallets/{walletId}/reconciliation:
+    post:
+      description: 'Reconstrói o saldo a partir do ledger, abertura incluída, e compara
+        com o saldo gravado, os dois lidos de uma mesma visão consistente dos dados.
+        Não altera nada: uma divergência vai na resposta, no log e numa métrica, e
+        nunca é corrigida. Restrita ao serviço interno.'
+      parameters:
+      - description: Id da carteira
+        in: path
+        name: walletId
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/wallet.ReconciliationResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/structs.APIError'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/structs.APIError'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/structs.APIError'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/structs.APIError'
+        "503":
+          description: Service Unavailable
+          schema:
+            $ref: '#/definitions/structs.APIError'
+      security:
+      - OAuth2Password: []
+      summary: Reconcilia uma carteira
       tags:
       - wallets
 securityDefinitions:

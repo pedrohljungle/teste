@@ -19,4 +19,10 @@ type UnitOfWork interface {
 	// the answer been lost. The write is safe to retry because every write is idempotent by
 	// constraint.
 	Atomic(ctx context.Context, fn func(ctx context.Context) error) error
+
+	// Snapshot runs fn in one read-only transaction that sees a single consistent view of the
+	// data. Everything the repositories read inside it comes from the same instant, which is what
+	// a comparison between two readings needs: two separate reads can disagree only because
+	// something committed between them. Nothing can be written inside it.
+	Snapshot(ctx context.Context, fn func(ctx context.Context) error) error
 }

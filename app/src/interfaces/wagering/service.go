@@ -3,6 +3,8 @@ package wagering
 import (
 	"context"
 
+	"github.com/google/uuid"
+
 	"github.com/estrategiahq/pedro-test/app/src/entities"
 	"github.com/estrategiahq/pedro-test/app/src/structs"
 )
@@ -34,4 +36,13 @@ type Service interface {
 	// ones a retry cannot fix (a malformed operation, a conflict) are permanent, and anything
 	// else is the storage being unavailable, which is worth another delivery.
 	Receive(ctx context.Context, message structs.WagerMessage) (structs.WagerOutcome, error)
+
+	// Get reads a transaction by id, on behalf of a provider. It fails with ErrNotFound when the
+	// transaction does not exist and, exactly the same, when it belongs to another provider: a
+	// provider is not told that a transaction it may not read exists.
+	Get(ctx context.Context, providerID string, id uuid.UUID) (*entities.WagerTransaction, error)
+
+	// GetByExternal reads a provider's transaction by the id the provider gave it. It fails with
+	// ErrNotFound. The provider is the one that is asking: the lookup is scoped to it.
+	GetByExternal(ctx context.Context, providerID, externalTransactionID string) (*entities.WagerTransaction, error)
 }

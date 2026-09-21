@@ -132,3 +132,49 @@ func (r *postgresRepository) InsertEntry(ctx context.Context, entry entities.Led
 	}
 	return nil
 }
+
+func (r *postgresRepository) ListEntries(ctx context.Context, walletID uuid.UUID, afterSeq int64, limit int) (entries []entities.LedgerEntry, err error) {
+	ctx, end := r.obs.Start(ctx, observability.LayerRepository, "wallet.Repository.ListEntries")
+	defer func() { end(err) }()
+
+	rows, err := r.db.Q(ctx).Query(ctx,
+		`SELECT id, seq, wallet_id, transaction_id, direction, amount_minor, currency,
+		        balance_before_minor, balance_after_minor, created_at
+		 FROM wallet_ledger_entries
+		 WHERE wallet_id = $1 AND seq > $2
+		 ORDER BY seq
+		 LIMIT $3`, walletID, afterSeq, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list ledger entries: %w", db.Classify(err))
+	}
+	snapshots, err := pgx.CollectRows(rows, pgx.RowToStructByName[entities.LedgerEntrySnapshot])
+	if err != nil {
+		return nil, fmt.Errorf("list ledger entries: %w", db.Classify(err))
+	}
+
+	entries = make([]entities.LedgerEntry, 0, len(snapshots))
+	for _, snapshot := range snapshots {
+		entry, err := entities.RehydrateLedgerEntry(snapshot)
+		if err != nil {
+			return nil, err
+		}
+		entries = append(entries, entry)
+	}
+	return entries, nil
+}
+
+func (r *postgresRepository) SumEntries(ctx context.Context, walletID uuid.UUID) (totals walletiface.Totals, err error) {
+	ctx, end := r.obs.Start(ctx, observability.LayerRepository, "wallet.Repository.SumEntries")
+	defer func() { end(err) }()
+
+	err = r.db.Q(ctx).QueryRow(ctx,
+		`SELECT count(*),
+		        coalesce(sum(amount_minor) FILTER (WHERE direction = 'CREDIT'), 0),
+		        coalesce(sum(amount_minor) FILTER (WHERE direction = 'DEBIT'), 0)
+		 FROM wallet_ledger_entries WHERE wallet_id = $1`, walletID).
+		Scan(&totals.Entries, &totals.Credits, &totals.Debits)
+	if err != nil {
+		return walletiface.Totals{}, fmt.Errorf("sum ledger entries: %w", db.Classify(err))
+	}
+	return totals, nil
+}

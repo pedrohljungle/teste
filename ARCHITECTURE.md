@@ -1181,45 +1181,57 @@ não terminar no prazo fica sem ack e volta pela fila, sem efeito duplicado por 
 
 | Rota | Autorização | Códigos |
 |---|---|---|
-| `POST /wallets` | papel de serviço interno | `201` · `409` já existe · `400` |
-| `GET /wallets/:id` | interno ou dono | `200` · `404` |
-| `GET /wallets/:id/ledger` | interno ou dono | `200` (cursor opaco) · `400` cursor inválido |
-| `POST /wallets/:id/reconciliation` | papel de serviço interno | `200` |
-| `POST /wagering/transactions` | provedor autenticado | ver abaixo |
-| `GET /wagering/transactions/:id` | provedor dono da transação | `200` · `403` · `404` |
-| `GET /providers/:providerId/wagering/transactions/:externalId` | provedor dono | `200` · `403` · `404` |
+| `POST /wallets` | `internal_service` | `201` · `409` já existe · `400` |
+| `GET /wallets/:id` | `internal_service` | `200` · `404` · `400` |
+| `GET /wallets/:id/ledger` | `internal_service` | `200` (cursor opaco) · `400` cursor ou limit inválido · `404` |
+| `POST /wallets/:id/reconciliation` | `internal_service` | `200` · `404` |
+| `POST /wagering/transactions` | `provider`, e o `providerId` do corpo é o do token | ver abaixo |
+| `GET /wagering/transactions/:id` | `provider`; só a **própria** transação | `200` · `404` (inclusive para a de outro provedor) |
+| `GET /providers/:providerId/wagering/transactions/:externalId` | `provider`; `:providerId` é o do token | `200` · `403` (outro provedor) · `404` |
 | `GET /health/live`, `/health/ready` | pública | `200` · `503` |
+
+Operações de carteira são do serviço interno (SPEC §2); um provedor não lê carteira, ledger nem
+reconciliação, e o serviço interno não lê transação de provedor. Cada rota declara o papel na
+própria definição.
 
 `POST /wagering/transactions`:
 
 | Código | Quando | Corpo |
 |---|---|---|
-| `200` | processada, ou replay idempotente | `transactionId` · `status` · `balance` · `idempotentReplay` |
-| `202` | `PENDING_REFERENCE` | `transactionId` · `status` |
-| `400` | payload inválido, `Idempotency-Key` ausente, `OPENING` recebido | `apierr.Error` |
-| `401` / `403` | token ausente/inválido · `providerId` divergente do token | `apierr.Error` |
-| `409` | chave reusada com outro conteúdo, ou operação já existente com outra chave | `apierr.Error` |
-| `422` | rejeição de negócio: **gravada e reproduzível**, corpo `TransactionResponse` com `status: REJECTED`, `failureCode` e `transactionId`. Só `WALLET_NOT_FOUND` responde `422` sem `transactionId`, porque não há o que gravar | `TransactionResponse` |
-| `503` | Postgres ou SQS indisponível, verificador não carregado | `apierr.Error` |
+| `200` | processada, ou replay idempotente | `TransactionResponse`: `transactionId` · `status` · `balance` · `idempotentReplay` |
+| `202` | `PENDING_REFERENCE` | `TransactionResponse`: `transactionId` · `status` |
+| `400` | payload inválido, `Idempotency-Key` ausente, `OPENING` recebido | `APIError` (com `failureCode` quando há um) |
+| `401` / `403` | token ausente/inválido · `providerId` divergente do token | `APIError` |
+| `409` | chave reusada com outro conteúdo, ou operação já existente com outra chave | `APIError` |
+| `422` | rejeição de negócio: **gravada e reproduzível**, corpo `TransactionResponse` com `status: REJECTED`, `failureCode` e `transactionId`. Só `WALLET_NOT_FOUND` responde `422` sem `transactionId`, porque não há o que gravar | `TransactionResponse` / `APIError` |
+| `503` | Postgres ou SQS indisponível, verificador não carregado | `APIError` |
 
 **`422` × `409` × `503` é a distinção que o SPEC §9 cobra.** `409` é "sua chave está errada" —
 corrija o cliente. `422` é "sua operação foi recusada" — a regra decidiu, o resultado é
 definitivo e auditável. `503` é "tente de novo" — nada foi decidido. Um cliente que trate os
 três igual vai reenviar o que não deve ou desistir do que daria certo.
 
-**Isolamento entre provedores.** Na escrita, o middleware compara a claim com o corpo. Na
-**leitura e no replay** não há corpo, então a verificação é do service, que filtra por
-`providerId` da identidade — nunca pelo `providerId` da URL. Um provedor consultando a
-transação de outro recebe `404`, não `403`: a existência da transação alheia também é
-informação.
+**Isolamento entre provedores.** Na escrita, o `providerId` do corpo tem de ser o do token (`403`
+senão), decidido antes de ler ou gravar qualquer coisa. Na **leitura** não há corpo, então quem
+filtra é o service, sempre pelo provedor da **identidade**, nunca pelo da URL. Uma transação de
+outro provedor responde `404`, **exatamente como uma que não existe**: existe um teste unitário que
+compara as duas mensagens, porque a diferença entre elas diria quais ids pertencem a alguém. Já o
+caminho `/providers/:providerId/…` com o provedor errado é `403`: é decidido só pela comparação com
+o token, sem tocar em dado nenhum, então não revela existência.
 
-### Reconciliação
+**Paginação do ledger.** O cursor é opaco (`base64url("v1.<seq>")`) e a ordem é o `seq` do
+`IDENTITY` da coluna, que nunca muda nem se repete. Como toda escrita numa carteira é serializada
+pelo lock da linha, o `seq` de uma carteira cresce na ordem do commit: um lançamento gravado
+enquanto o cliente lê aparece numa página posterior, e nenhum é pulado nem visto duas vezes. O teto
+de página (200) é regra do service; sem `limit` vale 50, e um `limit` presente que não seja um
+inteiro ≥ 1 é `400` — dizer `limit=0` não é pedir o padrão.
 
-`SELECT sum(CASE direction WHEN 'CREDIT' THEN amount_minor ELSE -amount_minor END)` sobre o
-ledger da carteira, em `REPEATABLE READ` junto com a leitura do saldo — os dois números
-precisam vir da mesma visão dos dados, ou a divergência reportada seria só o efeito de uma
-escrita concorrente. `difference = stored - calculated`. **Não escreve nada**: divergência vira
-resposta, log em `error` e a métrica `reconciliation_divergences_total`.
+**Reconciliação.** `POST /wallets/:id/reconciliation` lê o saldo gravado e a soma do ledger
+(`créditos − débitos`, abertura incluída) **numa única transação `REPEATABLE READ` somente leitura**
+(`UnitOfWork.Snapshot`). Lidos um depois do outro, um movimento que commitasse entre as duas leituras
+faria uma carteira saudável parecer divergente, e o relatório seria tão errado quanto o que ele
+verifica. `difference = saldo gravado − saldo reconstruído`. Uma divergência vai na resposta e num
+log de erro, e **nunca é corrigida**: reescrever o saldo destruiria a evidência.
 
 ---
 

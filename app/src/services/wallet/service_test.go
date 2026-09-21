@@ -68,6 +68,11 @@ func (u unitOfWork) Atomic(ctx context.Context, fn func(ctx context.Context) err
 	return nil
 }
 
+// Snapshot behaves as Atomic for a double: nothing else runs while a test does.
+func (u unitOfWork) Snapshot(ctx context.Context, fn func(ctx context.Context) error) error {
+	return fn(ctx)
+}
+
 type walletStore struct{ m *memory }
 
 func (s walletStore) Insert(_ context.Context, w *entities.Wallet) error {
@@ -100,6 +105,44 @@ func (s walletStore) Update(_ context.Context, w *entities.Wallet) error {
 func (s walletStore) InsertEntry(_ context.Context, e entities.LedgerEntry) error {
 	s.m.entries = append(s.m.entries, e.Snapshot())
 	return nil
+}
+
+func (s walletStore) ListEntries(_ context.Context, walletID uuid.UUID, afterSeq int64, limit int) ([]entities.LedgerEntry, error) {
+	var page []entities.LedgerEntry
+	for i, snapshot := range s.m.entries {
+		if snapshot.WalletID != walletID {
+			continue
+		}
+		snapshot.Seq = int64(i + 1)
+		if snapshot.Seq <= afterSeq {
+			continue
+		}
+		entry, err := entities.RehydrateLedgerEntry(snapshot)
+		if err != nil {
+			return nil, err
+		}
+		page = append(page, entry)
+		if len(page) == limit {
+			break
+		}
+	}
+	return page, nil
+}
+
+func (s walletStore) SumEntries(_ context.Context, walletID uuid.UUID) (walletiface.Totals, error) {
+	var totals walletiface.Totals
+	for _, snapshot := range s.m.entries {
+		if snapshot.WalletID != walletID {
+			continue
+		}
+		totals.Entries++
+		if snapshot.Direction == "CREDIT" {
+			totals.Credits += snapshot.AmountMinor
+		} else {
+			totals.Debits += snapshot.AmountMinor
+		}
+	}
+	return totals, nil
 }
 
 type wageringStore struct{ m *memory }

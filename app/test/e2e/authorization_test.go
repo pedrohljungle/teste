@@ -31,6 +31,11 @@ import (
 //	  - An internal service cannot submit operations
 //	  - A provider cannot submit an operation for another provider
 //	  - A provider cannot replay another provider's operation
+//	  - A provider cannot read another provider's transaction
+//	  - A provider cannot read another provider's transaction by its external id
+//	  - A provider cannot read wallets, ledgers or reconciliations
+//	  - An internal service cannot read transactions
+//	  - The reads without a token are refused
 
 // openWalletWith posts a wallet opening under the given bearer.
 func openWalletWith(t *testing.T, bearer, playerID string) *http.Response {
@@ -180,6 +185,95 @@ func TestAProviderCannotReplayAnotherProvidersOperation(t *testing.T) {
 	if s := walletState(t, w.ID); s.debits != 2500 {
 		t.Fatalf("the replay attempt changed the wallet: %+v", s)
 	}
+}
+
+// Scenario: A provider cannot read another provider's transaction
+//
+//	Given a transaction belonging to provider-b
+//	When provider-a fetches it by id
+//	Then the response is 404 and no data about it is exposed
+//	And it answers exactly as it does for a transaction that does not exist
+func TestAProviderCannotReadAnotherProvidersTransaction(t *testing.T) {
+	w := newWallet(t, "1000.00")
+	body := w.operation("BET", "25.00")
+	body.ProviderID = core.ProviderB
+	key := core.ProviderB + ":" + body.ExternalTransactionID
+	stored := core.Decode[transactionResponse](t, core.KeepStatus(t, submitAs(t, core.ProviderB, key, body), http.StatusOK))
+
+	foreign := readAs(t, core.ProviderA, "/wagering/transactions/"+stored.TransactionID)
+	missing := readAs(t, core.ProviderA, "/wagering/transactions/"+uuid.NewString())
+
+	core.RequireStatus(t, foreign, http.StatusNotFound)
+	core.RequireStatus(t, missing, http.StatusNotFound)
+	own := core.Decode[transactionDetail](t, core.KeepStatus(t,
+		readAs(t, core.ProviderB, "/wagering/transactions/"+stored.TransactionID), http.StatusOK))
+	if own.TransactionID != stored.TransactionID {
+		t.Fatalf("the owner cannot read its own transaction: %+v", own)
+	}
+}
+
+// Scenario: A provider cannot read another provider's transaction by its external id
+//
+//	Given a transaction belonging to provider-b
+//	When provider-a asks for it under provider-b's path
+//	Then the response is 403 and nothing about the transaction is disclosed
+//	And under its own path the same external id finds nothing
+func TestAProviderCannotReadAnotherProvidersTransactionByItsExternalId(t *testing.T) {
+	w := newWallet(t, "1000.00")
+	body := w.operation("BET", "25.00")
+	body.ProviderID = core.ProviderB
+	key := core.ProviderB + ":" + body.ExternalTransactionID
+	stored := core.Decode[transactionResponse](t, core.KeepStatus(t, submitAs(t, core.ProviderB, key, body), http.StatusOK))
+
+	forbidden := readAs(t, core.ProviderA, "/providers/"+core.ProviderB+"/wagering/transactions/"+body.ExternalTransactionID)
+	answer := core.Decode[errorResponse](t, core.KeepStatus(t, forbidden, http.StatusForbidden))
+	if strings.Contains(answer.Message, stored.TransactionID) || strings.Contains(answer.Message, "975.00") {
+		t.Fatalf("the refusal disclosed the transaction: %q", answer.Message)
+	}
+	core.RequireStatus(t, readAs(t, core.ProviderA,
+		"/providers/"+core.ProviderA+"/wagering/transactions/"+body.ExternalTransactionID), http.StatusNotFound)
+}
+
+// Scenario: A provider cannot read wallets, ledgers or reconciliations
+//
+//	Given a valid token of a game provider
+//	When it reads a wallet and its ledger, or reconciles it
+//	Then each is 403
+func TestAProviderCannotReadWalletsLedgersOrReconciliations(t *testing.T) {
+	w := newWallet(t, "1000.00")
+	token := stack.ClientToken(t, core.ProviderA)
+
+	core.RequireStatus(t, readAs(t, core.ProviderA, "/wallets/"+w.ID), http.StatusForbidden)
+	core.RequireStatus(t, readAs(t, core.ProviderA, "/wallets/"+w.ID+"/ledger"), http.StatusForbidden)
+	core.RequireStatus(t, stack.Request(t, http.MethodPost, "/wallets/"+w.ID+"/reconciliation", token, nil), http.StatusForbidden)
+}
+
+// Scenario: An internal service cannot read transactions
+//
+//	Given a valid token of the internal service
+//	When it fetches a provider's transaction
+//	Then the response is 403
+func TestAnInternalServiceCannotReadTransactions(t *testing.T) {
+	w := newWallet(t, "1000.00")
+	stored := applied(t, w.operation("BET", "25.00"))
+
+	core.RequireStatus(t, readAs(t, core.InternalService, "/wagering/transactions/"+stored.TransactionID), http.StatusForbidden)
+}
+
+// Scenario: The reads without a token are refused
+//
+//	When every read route is called with no Authorization header
+//	Then each answers 401
+func TestTheReadsWithoutATokenAreRefused(t *testing.T) {
+	id := uuid.NewString()
+
+	for _, path := range []string{
+		"/wallets/" + id, "/wallets/" + id + "/ledger",
+		"/wagering/transactions/" + id, "/providers/" + core.ProviderA + "/wagering/transactions/x",
+	} {
+		core.RequireStatus(t, stack.Request(t, http.MethodGet, path, "", nil), http.StatusUnauthorized)
+	}
+	core.RequireStatus(t, stack.Request(t, http.MethodPost, "/wallets/"+id+"/reconciliation", "", nil), http.StatusUnauthorized)
 }
 
 // requireNoTraceOf asserts that nothing of a player reached storage.

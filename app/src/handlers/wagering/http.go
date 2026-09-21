@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/google/uuid"
 	"github.com/labstack/echo/v4"
 
 	"github.com/estrategiahq/pedro-test/app/src/entities"
@@ -34,6 +35,8 @@ func NewHandler(service wageringiface.Service) *Handler {
 // act for is decided from the token inside the handler, because it depends on the request.
 func ServerRoutes(e *echo.Echo, h *Handler, requireAuthentication, requireProvider echo.MiddlewareFunc) {
 	e.POST("/wagering/transactions", h.Submit, requireAuthentication, requireProvider)
+	e.GET("/wagering/transactions/:transactionId", h.Get, requireAuthentication, requireProvider)
+	e.GET("/providers/:providerId/wagering/transactions/:externalTransactionId", h.GetByExternal, requireAuthentication, requireProvider)
 }
 
 // SubmitRequest is the body of an operation.
@@ -168,6 +171,129 @@ func statusOf(status entities.TransactionStatus) int {
 	}
 }
 
+// TransactionDetail is a transaction as a provider follows it: where it stands, why it was refused
+// when it was, and, while it waits for its reference, how the wait is going.
+type TransactionDetail struct {
+	TransactionID                  string            `json:"transactionId" example:"0192f298-345e-7e38-af88-e43f851a819d"`
+	ProviderID                     string            `json:"providerId" example:"provider-a"`
+	ExternalTransactionID          string            `json:"externalTransactionId" example:"transaction-123"`
+	WalletID                       string            `json:"walletId" example:"0192f291-27dd-7d3f-8071-5f8685deef37"`
+	PlayerID                       string            `json:"playerId" example:"0192f28f-5dc0-7d58-bdb2-814ad6a0f4a1"`
+	RoundID                        string            `json:"roundId" example:"round-987"`
+	GameID                         string            `json:"gameId" example:"fortune-chimp"`
+	Kind                           string            `json:"kind" enums:"BET,WIN,LOSS,REFUND,ROLLBACK" example:"BET"`
+	Money                          structs.MoneyDTO  `json:"money"`
+	Status                         string            `json:"status" enums:"PENDING,PENDING_REFERENCE,PROCESSED,REJECTED,FAILED" example:"PROCESSED"`
+	FailureCode                    string            `json:"failureCode,omitempty" example:"INSUFFICIENT_FUNDS"`
+	Balance                        *structs.MoneyDTO `json:"balance,omitempty"`
+	ReferenceExternalTransactionID string            `json:"referenceExternalTransactionId,omitempty" example:"transaction-122"`
+	ReferenceAttempts              int               `json:"referenceAttempts,omitempty" example:"3"`
+	NextAttemptAt                  string            `json:"nextAttemptAt,omitempty" example:"2026-09-08T12:00:05.000Z"`
+	ExpiresAt                      string            `json:"expiresAt,omitempty" example:"2026-09-09T12:00:00.000Z"`
+	CreatedAt                      string            `json:"createdAt" example:"2026-09-08T12:00:00.000Z"`
+	UpdatedAt                      string            `json:"updatedAt" example:"2026-09-08T12:00:00.000Z"`
+	SettledAt                      string            `json:"settledAt,omitempty" example:"2026-09-08T12:00:00.000Z"`
+}
+
+// Get reads one of the provider's own transactions by id.
+//
+//	@Summary		Lê uma transação pelo id
+//	@Description	Permite acompanhar uma pendência (tentativas, próxima olhada e expiração) e consultar o código de uma rejeição ou falha. Uma transação de outro provedor responde 404, exatamente como uma que não existe: perguntar não revela de quem é.
+//	@Tags			wagering
+//	@Produce		json
+//	@Param			transactionId	path		string	true	"Id da transação"
+//	@Success		200				{object}	TransactionDetail
+//	@Failure		400				{object}	structs.APIError
+//	@Failure		401				{object}	structs.APIError
+//	@Failure		403				{object}	structs.APIError
+//	@Failure		404				{object}	structs.APIError
+//	@Failure		503				{object}	structs.APIError
+//	@Security		OAuth2Password
+//	@Router			/wagering/transactions/{transactionId} [get]
+func (h *Handler) Get(c echo.Context) error {
+	provider, err := actingProvider(c)
+	if err != nil {
+		return err
+	}
+	id, parseErr := uuid.Parse(c.Param("transactionId"))
+	if parseErr != nil {
+		return badRequest("transactionId must be a UUID", "")
+	}
+	tx, err := h.service.Get(c.Request().Context(), provider, id)
+	if err != nil {
+		return httpError(err)
+	}
+	return c.JSON(http.StatusOK, detail(tx))
+}
+
+// GetByExternal reads one of the provider's own transactions by the id the provider gave it.
+//
+//	@Summary		Lê uma transação pelo id do provedor
+//	@Description	O providerId do caminho precisa ser o do token: outro é 403, decidido antes de tocar em qualquer dado.
+//	@Tags			wagering
+//	@Produce		json
+//	@Param			providerId				path		string	true	"Id do provedor, o mesmo do token"
+//	@Param			externalTransactionId	path		string	true	"Id que o provedor deu à transação"
+//	@Success		200						{object}	TransactionDetail
+//	@Failure		401						{object}	structs.APIError
+//	@Failure		403						{object}	structs.APIError
+//	@Failure		404						{object}	structs.APIError
+//	@Failure		503						{object}	structs.APIError
+//	@Security		OAuth2Password
+//	@Router			/providers/{providerId}/wagering/transactions/{externalTransactionId} [get]
+func (h *Handler) GetByExternal(c echo.Context) error {
+	if err := authorizeProvider(c, c.Param("providerId")); err != nil {
+		return err
+	}
+	provider, err := actingProvider(c)
+	if err != nil {
+		return err
+	}
+	tx, err := h.service.GetByExternal(c.Request().Context(), provider, c.Param("externalTransactionId"))
+	if err != nil {
+		return httpError(err)
+	}
+	return c.JSON(http.StatusOK, detail(tx))
+}
+
+// actingProvider is the provider the token belongs to. Every read is scoped by it, and never by
+// anything the request says about itself.
+func actingProvider(c echo.Context) (string, error) {
+	principal, ok := middleware.AuthenticatedPrincipal(c.Request().Context())
+	if !ok || principal.ProviderID == "" {
+		return "", forbidden("this identity does not act for a provider")
+	}
+	return principal.ProviderID, nil
+}
+
+func detail(tx *entities.WagerTransaction) TransactionDetail {
+	response := TransactionDetail{
+		TransactionID:                  tx.ID().String(),
+		ProviderID:                     tx.ProviderID(),
+		ExternalTransactionID:          tx.ExternalTransactionID(),
+		WalletID:                       tx.WalletID().String(),
+		PlayerID:                       tx.PlayerID().String(),
+		RoundID:                        tx.RoundID(),
+		GameID:                         tx.GameID(),
+		Kind:                           string(tx.Kind()),
+		Money:                          structs.MoneyDTOOf(tx.Money()),
+		Status:                         string(tx.Status()),
+		FailureCode:                    string(tx.FailureCode()),
+		ReferenceExternalTransactionID: tx.ReferenceExternalTransactionID(),
+		ReferenceAttempts:              tx.ReferenceAttempts(),
+		NextAttemptAt:                  structs.Timestamp(tx.ReferenceNextAttemptAt()),
+		ExpiresAt:                      structs.Timestamp(tx.ReferenceExpiresAt()),
+		CreatedAt:                      structs.Timestamp(tx.CreatedAt()),
+		UpdatedAt:                      structs.Timestamp(tx.UpdatedAt()),
+		SettledAt:                      structs.Timestamp(tx.SettledAt()),
+	}
+	if tx.Status() == entities.StatusProcessed {
+		balance := structs.MoneyDTOOf(tx.ResultBalance())
+		response.Balance = &balance
+	}
+	return response
+}
+
 func badRequest(message, failureCode string) *echo.HTTPError {
 	return echo.NewHTTPError(http.StatusBadRequest, structs.APIError{Message: message, FailureCode: failureCode})
 }
@@ -185,6 +311,7 @@ var failures = []struct {
 	code    string
 }{
 	{entities.ErrOpeningNotAllowed, http.StatusBadRequest, "OPENING is reserved to the internal wallet opening", string(entities.FailureOpeningNotAllowed)},
+	{wageringiface.ErrNotFound, http.StatusNotFound, "transaction not found", ""},
 	{wageringiface.ErrIdempotencyConflict, http.StatusConflict, "the idempotency key or the provider transaction id was already used with other content", ""},
 	{persistenceiface.ErrUnavailable, http.StatusServiceUnavailable, "storage is temporarily unavailable, try again", ""},
 }
