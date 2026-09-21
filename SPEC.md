@@ -1,12 +1,12 @@
 # SPEC.md — plano de ataque do desafio
 
-Este documento é o **diagnóstico e o plano**: o que o repositório já resolve do enunciado do
-desafio, o que falta, em que ordem construir e o que é preciso provar.
+Este documento é o **diagnóstico e o plano**: o que o repositório já resolve do
+[DESAFIO.md](DESAFIO.md), o que falta, em que ordem construir e o que é preciso provar.
 
-> **Sobre as citações.** "SPEC §N" — aqui, no [ARCHITECTURE.md](ARCHITECTURE.md), no código e nas
-> migrations — refere-se às seções do **enunciado do desafio**, que **não está versionado** neste
-> repositório (o `SPEC.md` é este plano, com outra numeração). O texto do enunciado continua no
-> histórico do git, em qualquer commit anterior à renomeação: `git show ddc8f2f:SPEC.md`.
+> **Sobre as citações.** "DESAFIO §N" — aqui, no [ARCHITECTURE.md](ARCHITECTURE.md), no README e nos
+> comentários das migrations — refere-se às seções do [DESAFIO.md](DESAFIO.md), o enunciado
+> original. Este arquivo (`SPEC.md`) é o plano, com numeração própria: os "§N" sem prefixo, aqui
+> dentro, são das seções deste documento.
 
 **As decisões técnicas e os diagramas não estão aqui.** Eles foram para o
 [ARCHITECTURE.md](ARCHITECTURE.md), junto das decisões que já existiam:
@@ -22,7 +22,7 @@ Aqui ficam três coisas:
 
 1. **O que já está pronto** e é reaproveitado sem tocar (§1).
 2. **O plano em 13 PRs**, com a definition of done de cada um (§3).
-3. **Os 91 cenários de e2e** que o SPEC §13 exige, escritos em Gherkin (§3.2).
+3. **Os 91 cenários de e2e** que o DESAFIO §13 exige, escritos em Gherkin (§3.2).
 
 > Comparação com o `HUMAN_SPEC.md`: ele cobre o núcleo síncrono (regras por `kind`, lock
 > pessimista, escrita atômica na outbox) e deixa de fora idempotência persistente, inbox/SQS,
@@ -34,10 +34,10 @@ Aqui ficam três coisas:
 ## 1. Estado atual: o que já está feito
 
 O repositório hoje é um **esqueleto de runtime** — o domínio `task` foi removido e
-`migrations/` está vazio. O que sobrou é justamente a infraestrutura que o SPEC exige, e ela
+`migrations/` está vazio. O que sobrou é justamente a infraestrutura que o DESAFIO exige, e ela
 já está no lugar.
 
-| Exigência do SPEC | Onde já está | Status |
+| Exigência do DESAFIO | Onde já está | Status |
 |---|---|---|
 | §4 Composição com Uber `fx`, `fx.Module`/`Provide`/`Invoke` | `libs/bootstrap.Core`, um `module.go` por pacote | **pronto** |
 | §4 `fx.Lifecycle`: start validado, shutdown observável, fecha dependência na ordem | `libs/jobrunner` (espera jobs em voo no `OnStop`), `libs/db`, `libs/observability` | **pronto** |
@@ -57,7 +57,7 @@ já está no lugar.
 | §9 Health check | `handlers/health` | **parcial — falta separar `live`/`ready`** |
 | Doc de API | swag + Swagger UI, `apierr.Error` | **pronto** |
 
-**Tradução:** dos 100 pontos do SPEC, a infraestrutura que costuma consumir a maior parte do
+**Tradução:** dos 100 pontos do DESAFIO, a infraestrutura que costuma consumir a maior parte do
 tempo já está de pé. O que falta é **domínio** — e é onde estão 70 dos 100 pontos.
 
 ### O que falta, em uma lista
@@ -106,7 +106,7 @@ migration publicada não se reescreve.
 Vale para **toda** etapa da tabela, sem exceção. A etapa só está pronta quando os seis passam:
 
 ```sh
-gofmt -l app/                # tem que sair vazio — SPEC 15 exige codigo formatado
+gofmt -l app/                # tem que sair vazio — DESAFIO 15 exige codigo formatado
 go vet ./...                 # tambem coberto pelo govet dentro do golangci-lint
 make lint                    # golangci-lint duas vezes: ./... e --build-tags e2e
 make test                    # unitarios, ja com -race e -failfast
@@ -124,7 +124,7 @@ E mais duas condições que comando nenhum verifica sozinho:
 > **`gofmt` já está coberto por `make lint`.** O `.golangci.yml` habilita `gofmt` e `goimports`
 > em `formatters:`, e o `golangci-lint` os reporta como `File is not properly formatted
 > (gofmt)` (verificado com um arquivo mal formatado). O `gofmt -l` na lista acima continua
-> valendo por ser o comando que o SPEC §15 cita literalmente, mas não é um segundo mecanismo.
+> valendo por ser o comando que o DESAFIO §15 cita literalmente, mas não é um segundo mecanismo.
 > Um alvo `make verify` que encadeia os seis passos deixa a DoD num comando só.
 
 ### 3.2 Cenários de e2e
@@ -134,7 +134,7 @@ com papel e objetivo no cabeçalho do arquivo, e o `Scenario:` em `Given/When/Th
 de cada função, cujo nome **é** o cenário. Gherkin vai em **inglês**, como todo comentário e
 nome de teste (CLAUDE.md §1); esta prosa continua em português.
 
-Toda Feature que mexe em dinheiro termina com a asserção final do SPEC §13: **saldo armazenado
+Toda Feature que mexe em dinheiro termina com a asserção final do DESAFIO §13: **saldo armazenado
 igual à soma de créditos menos débitos do ledger.** É um helper de `core/`, chamado no fim de
 cada cenário financeiro, não um cenário separado.
 
@@ -723,12 +723,12 @@ Feature: Composition and lifecycle
 
 ## 4. O que fica de fora, declarado
 
-O SPEC §15 pede limitações explícitas.
+O DESAFIO §15 pede limitações explícitas.
 
-- **Partidas dobradas** — opcional no SPEC; o ledger de uma perna cobre a auditoria pedida.
-- **Reversão parcial** — fora do escopo por definição do SPEC §7.
+- **Partidas dobradas** — opcional no DESAFIO; o ledger de uma perna cobre a auditoria pedida.
+- **Reversão parcial** — fora do escopo por definição do DESAFIO §7.
 - **Multi-moeda em operação** — o tipo carrega a moeda e há teste de incompatibilidade, mas os
-  cenários principais rodam em BRL, como o SPEC permite.
+  cenários principais rodam em BRL, como o DESAFIO permite.
 - **Redis / cache** — retirado do projeto por ora. **Saldo não é cacheado** em nenhum cenário:
   a única fonte é a linha travada no Postgres, e um cache de saldo transformaria a reconciliação
   numa medida do cache. Cache de leitura e CDN ficam como TO DO em
@@ -753,9 +753,9 @@ O que mudou em relação ao plano, e por quê:
 | F4 "idempotência sobrevive a restart" e F6 "backoff sobrevive a restart" | um cenário só, em F9, com carga mista | o mesmo restart prova as duas coisas: replay devolve o resultado original e a pendência mantém tentativas, próxima tentativa e expiração |
 | "três processos" independentes | três instâncias no mesmo processo de teste, cada uma com pool, verificador e memória próprios; o SIGTERM usa o **binário do worker** como processo real | um processo de SO por instância custaria minutos de build e boot sem provar nada a mais sobre as travas, que estão no Postgres |
 | Kill do consumidor entre commit e ack | falha injetada no `Ack` (`Faults.FailAcknowledging`) | não há como matar um processo exatamente nesse ponto; a falha injetada deixa o commit feito e a mensagem sem apagar, que é o estado que o kill deixaria |
-| Leituras abertas | leituras de carteira só para `internal_service`; o provedor lê só as transações dele (404 para as de outro) | o SPEC não dá ao provedor acesso ao saldo |
+| Leituras abertas | leituras de carteira só para `internal_service`; o provedor lê só as transações dele (404 para as de outro) | o DESAFIO não dá ao provedor acesso ao saldo |
 | `Money` em `structs/` | `Money` em `entities/`; `structs.MoneyDTO` é só o DTO do fio | decisão do autor do repositório durante a implementação |
 | `iso4217` de biblioteca | tabela ISO 4217 embutida em `entities/money.go` | nenhuma biblioteca confiável e mínima o bastante para justificar a dependência |
 
-Limitações que continuam declaradas em §4. Um ponto que não é do código: `HUMAN_SPEC.md` foi
-apagado do disco por outra pessoa durante o trabalho e a remoção ficou fora dos commits.
+Limitações que continuam declaradas em §4. O `HUMAN_SPEC.md`, que a comparação do início cita, foi
+removido do repositório: ele existe apenas no histórico do git.

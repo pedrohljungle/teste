@@ -3,8 +3,8 @@
 Este documento explica **o que** foi decidido e **por que**. A regra em si, curta e sem
 justificativa, está em [CLAUDE.md](CLAUDE.md).
 
-"SPEC §N" neste documento, no código e nas migrations refere-se às seções do **enunciado do
-desafio**, que não está versionado aqui; o [SPEC.md](SPEC.md) é o plano de implementação.
+"DESAFIO §N" neste documento e nos comentários das migrations refere-se às seções do
+[DESAFIO.md](DESAFIO.md), o enunciado original; o [SPEC.md](SPEC.md) é o plano de implementação.
 
 <!-- indice:inicio -->
 ## Índice
@@ -88,9 +88,9 @@ desafio**, que não está versionado aqui; o [SPEC.md](SPEC.md) é o plano de im
   - [5. O que falta no caminho do deploy](#5-o-que-falta-no-caminho-do-deploy)
 - [22. TO DO — cache de leitura e CDN](#22-to-do--cache-de-leitura-e-cdn)
 - [23. Limitações, interpretações adotadas e trabalho não concluído](#23-limitações-interpretações-adotadas-e-trabalho-não-concluído)
-  - [Interpretações onde o SPEC deixa margem](#interpretações-onde-o-spec-deixa-margem)
+  - [Interpretações onde o DESAFIO deixa margem](#interpretações-onde-o-desafio-deixa-margem)
   - [Limitações](#limitações)
-  - [Como a verificação se aproxima do que o SPEC descreve](#como-a-verificação-se-aproxima-do-que-o-spec-descreve)
+  - [Como a verificação se aproxima do que o DESAFIO descreve](#como-a-verificação-se-aproxima-do-que-o-desafio-descreve)
 <!-- indice:fim -->
 
 ---
@@ -115,7 +115,7 @@ Mais dois pacotes-folha: `entities/` (espelho de tabela) e `structs/` (o que atr
 DTO, envelope de mensagem, principal, o modelo de erro da API). **`structs/` é dado**: regra
 que viaja dentro de um DTO é regra aplicada em alguns caminhos e esquecida em outros.
 
-**O domínio implementado é o de carteira e apostas de provedores** (o enunciado do desafio, citado neste documento como "SPEC §N"; o plano está em [SPEC.md](SPEC.md)): `wallet`,
+**O domínio implementado é o de carteira e apostas de provedores** ([DESAFIO.md](DESAFIO.md), citado neste documento como "DESAFIO §N"; o plano está em [SPEC.md](SPEC.md)): `wallet`,
 `wagering`, `inbox`, `outbox` e a porta `persistence` (a transação, que não é domínio). Os
 exemplos com `pedido` ao longo deste documento são ilustrativos das *regras de camada*, não do
 domínio real. `/health*` e `/me` não são domínio: são as rotas que qualquer serviço tem.
@@ -308,7 +308,7 @@ Três consequências que não são óbvias:
 
 **Decisão: `int64` em centavos, escala fixa de 2, moeda ISO 4217 em coluna própria.**
 
-O SPEC §5.1 é eliminatório: dinheiro não passa por `float32`/`float64` em parsing, cálculo,
+O DESAFIO §5.1 é eliminatório: dinheiro não passa por `float32`/`float64` em parsing, cálculo,
 serialização ou persistência. `NUMERIC` no Postgres é exato, mas o caminho `NUMERIC` → Go é
 onde o acidente acontece: um `Scan` para `float64` num campo esquecido não falha, só erra.
 `BIGINT` → `int64` não tem esse caminho. O tipo que o banco guarda é o mesmo que o Go calcula.
@@ -365,7 +365,7 @@ permitido em diferença interna (a reconciliação precisa dele).
 
 **Retomada durável.** Operações sem dependência são concluídas **de forma síncrona**, em uma
 transação: o `INSERT` como `PENDING`, a movimentação, o ledger, a transição para o estado terminal
-e a outbox são o **mesmo commit**. Não existe commit intermediário de aceite (o SPEC §6.3 permite),
+e a outbox são o **mesmo commit**. Não existe commit intermediário de aceite (o DESAFIO §6.3 permite),
 então **nenhuma linha `PENDING` chega a ser confirmada**: uma interrupção antes do commit desfaz
 tudo, e o reenvio da operação a refaz do zero (idempotência), e uma interrupção depois do commit
 encontra a transação já terminal. Não há, por isso, um worker que varra `PENDING` — ele não teria o
@@ -417,20 +417,20 @@ nunca chegou, `REFERENCE_NOT_PROCESSED` quando chegou e continua sem terminar.
 **Cadeias.** Um `ROLLBACK` de um `REFUND` que ainda espera pela sua `BET` também espera. Chegando a
 `BET`, o job resolve o `REFUND` e, no tick seguinte, o `ROLLBACK`.
 
-**A mensagem de entrada é concluída assim que a pendência está persistida** (SPEC §6.5): o
+**A mensagem de entrada é concluída assim que a pendência está persistida** (DESAFIO §6.5): o
 job de resolução assume a continuidade, e segurar a mensagem na fila só faria a DLQ comer
 uma operação que está progredindo.
 
 **`REFUND` e `ROLLBACK` sobre a mesma aposta.** Decisão: **uma aposta recebe no máximo uma
 reversão bem-sucedida, de qualquer tipo.** A segunda é rejeitada com
-`REFERENCE_ALREADY_REVERSED`. O SPEC exige impedir duas reversões *do mesmo tipo*; escolher a
+`REFERENCE_ALREADY_REVERSED`. O DESAFIO exige impedir duas reversões *do mesmo tipo*; escolher a
 regra mais forte elimina a devolução dupla do mesmo débito sem depender de ordem de chegada — e
 `uk_wager_single_reversal` a impõe no banco. Reverter uma reversão continua possível pelo
 caminho legítimo: `ROLLBACK` apontando para o `REFUND`, que é outra referência.
 
 ### 2.5 Códigos de falha
 
-Estáveis, documentados, e distinguindo entrada corrigível de resultado definitivo (SPEC §7).
+Estáveis, documentados, e distinguindo entrada corrigível de resultado definitivo (DESAFIO §7).
 
 | `failureCode` | Significado | Corrigível? |
 |---|---|---|
@@ -448,7 +448,7 @@ Estáveis, documentados, e distinguindo entrada corrigível de resultado definit
 | `INVALID_AMOUNT` | valor viola a política do tipo | sim |
 | `INTERNAL_ERROR` | código de uma transação `FAILED`: falha permanente de infraestrutura, só para auditoria | não |
 
-Os dois primeiros são **códigos diferentes de propósito**: o SPEC §7 exige que a reversão sem
+Os dois primeiros são **códigos diferentes de propósito**: o DESAFIO §7 exige que a reversão sem
 saldo não se confunda com a aposta sem saldo.
 ### 2.6 Idempotência
 
@@ -457,7 +457,7 @@ saldo não se confunda com a aposta sem saldo.
 1. `MessageDeduplicationId` da FIFO — janela de 5 minutos, é otimização.
 2. `inbox_messages` — dedup durável por consumidor.
 3. **`uk_wager_provider_external` + `uk_wager_idempotency_key`** — a garantia financeira, que
-   sobrevive a reinício de todos os processos (SPEC §5.2) e vale igual para HTTP e SQS.
+   sobrevive a reinício de todos os processos (DESAFIO §5.2) e vale igual para HTTP e SQS.
 
 **O hash do payload.** SHA-256 sobre JSON canônico (chaves ordenadas, sem espaço) dos campos
 de negócio:
@@ -473,7 +473,7 @@ documentadas: `money.amount` para exatamente duas casas, `money.currency` para m
 `kind` para maiúscula, campo ausente omitido (nunca `null`). É a mesma função nos dois
 caminhos de entrada — é o que faz a mesma operação por HTTP e por SQS colidir.
 
-**As quatro respostas** (SPEC §9):
+**As quatro respostas** (DESAFIO §9):
 
 | Situação | Resposta |
 |---|---|
@@ -489,33 +489,33 @@ mentiria sobre o resultado daquela operação.
 
 **Decisão: `SELECT ... FOR UPDATE` na linha da carteira.**
 
-O SPEC §8 aceita pessimista, otimista com retry ou atualização condicionada. Pessimista ganha
+O DESAFIO §8 aceita pessimista, otimista com retry ou atualização condicionada. Pessimista ganha
 aqui porque o caso de contenção do desafio é **a mesma carteira sob disputa** (as duas apostas
 de 80,00 sobre 100,00). Com controle otimista, esse cenário vira retry garantido: o segundo
 escritor faz todo o trabalho para descobrir no `UPDATE` que perdeu. Com `FOR UPDATE`, ele
 espera, lê o saldo já atualizado e decide **uma vez**, com o dado certo.
 
-- **Lock por linha, nunca global** (SPEC §5.6): carteiras diferentes não se tocam. O
+- **Lock por linha, nunca global** (DESAFIO §5.6): carteiras diferentes não se tocam. O
   `MessageGroupId` da FIFO é o `walletId`, então a fila preserva o mesmo particionamento —
   ordem por carteira, paralelismo entre carteiras.
-- **`version` continua existindo** e é incrementada só quando o saldo muda (SPEC §6.2). Ela
+- **`version` continua existindo** e é incrementada só quando o saldo muda (DESAFIO §6.2). Ela
   não é o mecanismo de concorrência; é o que o evento publica e o que um consumidor usa para
   ordenar.
-- **Lost update é impossível** (SPEC §5.7): o segundo escritor só lê depois do commit do
+- **Lost update é impossível** (DESAFIO §5.7): o segundo escritor só lê depois do commit do
   primeiro.
 - **Deadlock:** uma transação trava **uma** carteira. Operação multi-carteira não existe neste
   desafio; se existir um dia, a regra é travar em ordem de `id`.
 - **`uk_ledger_wallet_transaction` é a rede embaixo.** Se a regra falhar, o `INSERT` do
   segundo lançamento falha. Movimentação duplicada exigiria furar a regra **e** a constraint.
 
-O cenário obrigatório do SPEC §8, passo a passo: duas apostas de 80,00 chegam em processos
+O cenário obrigatório do DESAFIO §8, passo a passo: duas apostas de 80,00 chegam em processos
 diferentes; ambas disputam `FOR UPDATE`; a primeira debita e commita (saldo 20,00, versão 2, um
 `DEBIT` no ledger); a segunda entra no lock, lê 20,00, rejeita com `INSUFFICIENT_FUNDS`, grava
 a transação `REJECTED` **sem** lançamento. Reenvio de qualquer uma das duas cai na idempotência
 e devolve o resultado gravado.
 ### 2.8 Eventos
 
-Envelope único, tipo e versão definidos pelo construtor (SPEC §11), timestamps RFC 3339 UTC,
+Envelope único, tipo e versão definidos pelo construtor (DESAFIO §11), timestamps RFC 3339 UTC,
 dinheiro em string decimal:
 
 ```json
@@ -680,7 +680,7 @@ transacao SQL, mas tem ciclo de vida e expurgo proprios.
 ```
 ### 3.2 DDL
 
-Só entra no schema o que o SPEC manda o schema impor. **Toda regra de negócio — política de
+Só entra no schema o que o DESAFIO manda o schema impor. **Toda regra de negócio — política de
 valor por tipo, aritmética do lançamento, metadado obrigatório por origem, enum válido — é
 validada no domínio**, em `entities/`, e tem teste unitário. O critério de corte está em §3.3.
 
@@ -696,15 +696,15 @@ CREATE TABLE wallets (
     created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
 
-    -- SPEC 6.2: o par (playerId, currency) identifica uma unica carteira.
+    -- DESAFIO 6.2: o par (playerId, currency) identifica uma unica carteira.
     CONSTRAINT uk_wallet_player_currency UNIQUE (player_id, currency),
-    -- SPEC 5.8: "nao negatividade [deve ser] imposta pelo schema".
+    -- DESAFIO 5.8: "nao negatividade [deve ser] imposta pelo schema".
     CONSTRAINT ck_wallet_balance_non_negative CHECK (balance_minor >= 0)
 );
 
 CREATE TABLE wager_transactions (
     id           UUID        PRIMARY KEY,
-    -- SPEC 6.3: "o schema deve distinguir operacoes internas e externas".
+    -- DESAFIO 6.3: "o schema deve distinguir operacoes internas e externas".
     origin       TEXT        NOT NULL,
     kind         TEXT        NOT NULL,
     status       TEXT        NOT NULL,
@@ -740,23 +740,23 @@ CREATE TABLE wager_transactions (
     settled_at TIMESTAMPTZ
 );
 
--- SPEC 9: a operacao financeira e identificada por (providerId, externalTransactionId) e nao
+-- DESAFIO 9: a operacao financeira e identificada por (providerId, externalTransactionId) e nao
 -- pode ser reaplicada por outra chave.
 CREATE UNIQUE INDEX uk_wager_provider_external
     ON wager_transactions (provider_id, external_transaction_id)
     WHERE origin = 'EXTERNAL';
 
--- SPEC 9: a chave recebida e guardada como veio; o servidor nao a substitui.
+-- DESAFIO 9: a chave recebida e guardada como veio; o servidor nao a substitui.
 CREATE UNIQUE INDEX uk_wager_idempotency_key
     ON wager_transactions (provider_id, idempotency_key)
     WHERE origin = 'EXTERNAL';
 
--- SPEC 6.3: "impedir credito inicial duplicado".
+-- DESAFIO 6.3: "impedir credito inicial duplicado".
 CREATE UNIQUE INDEX uk_wager_single_opening
     ON wager_transactions (wallet_id)
     WHERE kind = 'OPENING';
 
--- SPEC 7: uma referencia nao recebe duas reversoes bem-sucedidas. O indice cobre REFUND e
+-- DESAFIO 7: uma referencia nao recebe duas reversoes bem-sucedidas. O indice cobre REFUND e
 -- ROLLBACK juntos, entao a combinacao dos dois sobre a mesma BET tambem e impedida (ver §2.4).
 CREATE UNIQUE INDEX uk_wager_single_reversal
     ON wager_transactions (provider_id, reference_external_transaction_id)
@@ -783,7 +783,7 @@ CREATE TABLE wallet_ledger_entries (
     balance_after_minor  BIGINT      NOT NULL,
     created_at           TIMESTAMPTZ NOT NULL DEFAULT now(),
 
-    -- SPEC 6.4: "imponha no banco a unicidade de (walletId, transactionId)". E a barreira
+    -- DESAFIO 6.4: "imponha no banco a unicidade de (walletId, transactionId)". E a barreira
     -- contra movimentacao duplicada: mesmo que dois processos passem pela regra em Go, o
     -- segundo INSERT falha.
     CONSTRAINT uk_ledger_wallet_transaction UNIQUE (wallet_id, transaction_id)
@@ -792,7 +792,7 @@ CREATE TABLE wallet_ledger_entries (
 CREATE UNIQUE INDEX uk_ledger_seq ON wallet_ledger_entries (seq);
 CREATE INDEX idx_ledger_wallet_cursor ON wallet_ledger_entries (wallet_id, seq);
 
--- SPEC 5.8 e 6.4: "imutabilidade do ledger [imposta] pelos mecanismos de protecao do banco" e
+-- DESAFIO 5.8 e 6.4: "imutabilidade do ledger [imposta] pelos mecanismos de protecao do banco" e
 -- "a protecao contra edicao ou exclusao". Append-only nao pode depender da disciplina de quem
 -- escreve o SQL.
 -- +goose StatementBegin
@@ -822,7 +822,7 @@ CREATE TABLE inbox_messages (
     received_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
     completed_at  TIMESTAMPTZ,
 
-    -- SPEC 6.5: "unicidade de (consumerName, messageId)".
+    -- DESAFIO 6.5: "unicidade de (consumerName, messageId)".
     CONSTRAINT pk_inbox PRIMARY KEY (consumer_name, message_id)
 );
 
@@ -861,7 +861,7 @@ DROP TABLE wallets;
 ```
 ### 3.3 O critério: o que é do banco e o que é do domínio
 
-O SPEC nomeia, com essas palavras, o que o **schema** tem de impor:
+O DESAFIO nomeia, com essas palavras, o que o **schema** tem de impor:
 
 > §5.8 — *"**Unicidade, não negatividade e imutabilidade do ledger** devem ser impostas pelo
 > schema, pelas constraints e pelos mecanismos de proteção do banco."*
@@ -888,15 +888,15 @@ Go falhe**:
 
 ### O que **não** vai para o banco
 
-O SPEC não pede validação de regra de negócio no schema — pede o contrário, em §6:
+O DESAFIO não pede validação de regra de negócio no schema — pede o contrário, em §6:
 entidades com *"construtores com validação e métodos explícitos de transição"*, com as
 invariantes preservadas *"em todas as operações públicas"*. Sobre a aritmética do lançamento
 ele é literal: *"sua **construção** deve validar `balanceAfter = balanceBefore ± money`"* —
 construção, não `CHECK`.
 
-Então estas ficam em `entities/`, cada uma com teste unitário (que é onde o SPEC §13 as cobra):
+Então estas ficam em `entities/`, cada uma com teste unitário (que é onde o DESAFIO §13 as cobra):
 
-| Regra | Onde | SPEC |
+| Regra | Onde | DESAFIO |
 |---|---|---|
 | `balanceAfter = balanceBefore ± money` | construtor de `LedgerEntry` | §6.4 |
 | `LOSS` exige `0.00`; os demais exigem `> 0` | construtor de `WagerTransaction` | §7 |
@@ -920,11 +920,11 @@ uma constraint de uma linha se a decisão mudar.
 
 ### 4.1 O que o domínio muda no desenho
 
-Antes do schema, os pontos onde o SPEC pede algo diferente do que a regra do repositório diz
+Antes do schema, os pontos onde o DESAFIO pede algo diferente do que a regra do repositório diz
 hoje. Todos cabem no paradigma; nenhum troca o paradigma.
 
 **a) `entities/` deixa de ser espelho de tabela e ganha comportamento.**
-O CLAUDE.md §3 descreve `entities/` como "espelho de tabela". O SPEC §6 exige agregado de
+O CLAUDE.md §3 descreve `entities/` como "espelho de tabela". O DESAFIO §6 exige agregado de
 verdade: construtor com validação, **reidratação separada da criação** (reidratar não reaplica
 movimentação nem emite evento), métodos explícitos de transição e invariante preservada em
 toda operação pública. Isso **não** quebra nenhuma regra: `entities/` continua folha, sem
@@ -941,13 +941,13 @@ se aplicam a uma transação interna (`OPENING`) são ponteiros no snapshot e vi
 
 **b) HTTP e SQS compartilham o mesmo service.**
 O CLAUDE.md §4 diz que o handler do worker chama um service próprio, porque "regra diferente,
-service diferente". Aqui a regra é **a mesma por exigência explícita** do SPEC §10: *"HTTP e
+service diferente". Aqui a regra é **a mesma por exigência explícita** do DESAFIO §10: *"HTTP e
 SQS devem compartilhar o caso de uso e as garantias de idempotência financeira."* Então:
 **dois handlers, um service**. O princípio por trás da regra é respeitado — separa-se o que
 muda por motivos diferentes, e aqui não muda.
 
 **c) Entra `libs/cronjob`, o runtime periódico — irmão do `jobrunner`.**
-Dois workers do SPEC não são consumidores de fila: o **publisher de outbox** (§11) e o
+Dois workers do DESAFIO não são consumidores de fila: o **publisher de outbox** (§11) e o
 **resolvedor de referência pendente** (§7) são laços disparados por tempo sobre o Postgres.
 
 O vocabulário fica explícito, porque os dois rodam no **mesmo processo** (`cmd/worker`):
@@ -992,7 +992,7 @@ type Task interface {
 ```
 
 Ele **não** abre transação (quem abre é o repositório, via `UnitOfWork`) e **não** faz eleição
-de líder — múltiplos publishers é requisito do SPEC, e o `SKIP LOCKED` já é o mecanismo de
+de líder — múltiplos publishers é requisito do DESAFIO, e o `SKIP LOCKED` já é o mecanismo de
 disputa.
 
 **Por que não reusar o `jobrunner`.** O laço dele chama `Consume` e, quando não há mensagem,
@@ -1101,7 +1101,7 @@ app/src/
 | Validação de borda, mapeamento para `apierr.Error` | `handlers/` |
 ### 4.5 A transação SQL
 
-O SPEC §11 exige que estado, saldo, ledger, inbox e eventos sejam confirmados **atomicamente**.
+O DESAFIO §11 exige que estado, saldo, ledger, inbox e eventos sejam confirmados **atomicamente**.
 O service precisa delimitar a transação **sem conhecer pgx** (o lint proíbe).
 
 A porta **não pertence a domínio nenhum**: `services/wallet`, `services/wagering` e
@@ -1168,7 +1168,7 @@ escritas precisam cair juntas, e só essas ele embrulha:
 |---|---|---|
 | `POST /wallets` | **sim** | carteira + `OPENING` + ledger + 2 eventos num commit |
 | `POST /wagering/transactions` | **sim** | transação + saldo + ledger + eventos |
-| Consumo de uma mensagem SQS | **sim** | o mesmo, mais a inbox (SPEC §6.5) |
+| Consumo de uma mensagem SQS | **sim** | o mesmo, mais a inbox (DESAFIO §6.5) |
 | Tick do resolvedor de referência | **sim**, uma por operação resolvida | cada resolução é um commit próprio |
 | Tick do publisher de outbox | **não** — dois commits curtos | o `claim` e o `mark published` são transações separadas, e o `SendMessage` fica **fora** das duas: I/O de rede não segura transação aberta |
 | `GET` de carteira, ledger, transação | **não** | leitura avulsa, auto-commit |
@@ -1229,7 +1229,7 @@ O que faz isso correto com **N publishers e nenhum coordenador**:
 - **Backoff**: `OUTBOX_BACKOFF_BASE` dobrado a cada tentativa até `OUTBOX_BACKOFF_MAX`, com
   espalhamento de ±20% para instâncias que falharam juntas não tentarem juntas. **Nunca desiste**:
   o evento fica `PENDING` com espera limitada, porque perder um evento cujo registro foi
-  confirmado é exatamente o que o SPEC proíbe.
+  confirmado é exatamente o que o DESAFIO proíbe.
 - **Republicação**: se o publisher morre entre o broker aceitar e a linha ser marcada, a linha
   continua `PENDING`, o lease expira e outro publisher envia **o mesmo `eventId`**. A fila FIFO
   descarta a segunda cópia dentro da janela de deduplicação (o `MessageDeduplicationId` é o
@@ -1332,7 +1332,7 @@ não terminar no prazo fica sem ack e volta pela fila, sem efeito duplicado por 
 | `GET /providers/:providerId/wagering/transactions/:externalId` | `provider`; `:providerId` é o do token | `200` · `403` (outro provedor) · `404` |
 | `GET /health/live`, `/health/ready` | pública | `200` · `503` |
 
-Operações de carteira são do serviço interno (SPEC §2); um provedor não lê carteira, ledger nem
+Operações de carteira são do serviço interno (DESAFIO §2); um provedor não lê carteira, ledger nem
 reconciliação, e o serviço interno não lê transação de provedor. Cada rota declara o papel na
 própria definição.
 
@@ -1348,7 +1348,7 @@ própria definição.
 | `422` | rejeição de negócio: **gravada e reproduzível**, corpo `TransactionResponse` com `status: REJECTED`, `failureCode` e `transactionId`. Só `WALLET_NOT_FOUND` responde `422` sem `transactionId`, porque não há o que gravar | `TransactionResponse` / `APIError` |
 | `503` | Postgres ou SQS indisponível, verificador não carregado | `APIError` |
 
-**`422` × `409` × `503` é a distinção que o SPEC §9 cobra.** `409` é "sua chave está errada" —
+**`422` × `409` × `503` é a distinção que o DESAFIO §9 cobra.** `409` é "sua chave está errada" —
 corrija o cliente. `422` é "sua operação foi recusada" — a regra decidiu, o resultado é
 definitivo e auditável. `503` é "tente de novo" — nada foi decidido. Um cliente que trate os
 três igual vai reenviar o que não deve ou desistir do que daria certo.
@@ -2338,10 +2338,10 @@ com cache de CDN na borda (§20), **mas exige análise maior antes de entrar**:
 
 ## 23. Limitações, interpretações adotadas e trabalho não concluído
 
-O SPEC §15 pede que isto seja explícito. Está aqui num lugar só; o *porquê* de cada ponto mora na
+O DESAFIO §15 pede que isto seja explícito. Está aqui num lugar só; o *porquê* de cada ponto mora na
 seção citada.
 
-### Interpretações onde o SPEC deixa margem
+### Interpretações onde o DESAFIO deixa margem
 
 | Ponto | O que foi adotado | Onde |
 |---|---|---|
@@ -2356,11 +2356,11 @@ seção citada.
 
 ### Limitações
 
-- **Ledger de partidas dobradas** (opcional no SPEC) não foi feito: o ledger de uma perna cobre a
+- **Ledger de partidas dobradas** (opcional no DESAFIO) não foi feito: o ledger de uma perna cobre a
   auditoria pedida.
-- **Reversão parcial** está fora do escopo, por definição do SPEC §7.
+- **Reversão parcial** está fora do escopo, por definição do DESAFIO §7.
 - **Multi-moeda em operação**: o tipo carrega a moeda e há testes de incompatibilidade, mas os
-  cenários principais rodam em BRL, como o SPEC permite.
+  cenários principais rodam em BRL, como o DESAFIO permite.
 - **Reconciliação é sob demanda** (`POST /wallets/:id/reconciliation`); não há job periódico que a
   dispare.
 - **Sem cache** e **sem teste de carga** (§22). Tracing existe pelo `Observer`; dashboards não.
@@ -2369,7 +2369,7 @@ seção citada.
   (§19); localmente o LocalStack aceita qualquer credencial. As validações de domínio ficam no
   consumidor de qualquer forma.
 
-### Como a verificação se aproxima do que o SPEC descreve
+### Como a verificação se aproxima do que o DESAFIO descreve
 
 - **"Três processos independentes"** são **três instâncias no mesmo processo de teste**, cada uma
   com pool de conexões, verificador de token e memória próprios; o que as coordena é o Postgres,

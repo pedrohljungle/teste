@@ -5,14 +5,15 @@ código (servidor HTTP e worker de fila), **Uber `fx`** para injeção de depend
 vida, **Keycloak** como IDP, **SQS** como fila, **pgx** no Postgres, **Swagger** (swag + Swagger
 UI) na doc de API, **OpenTelemetry** exportando direto (sem coletor) e **`zap`** no log.
 
-O domínio implementado é o de **carteira e apostas de provedores** (o enunciado do desafio; ver [SPEC.md](SPEC.md)): abrir carteira,
+O domínio implementado é o de **carteira e apostas de provedores** ([DESAFIO.md](DESAFIO.md); o plano está em [SPEC.md](SPEC.md)): abrir carteira,
 receber `BET`/`WIN`/`LOSS`/`REFUND`/`ROLLBACK` por HTTP ou por fila, manter o saldo e o ledger
 consistentes sob concorrência, publicar eventos por outbox e conciliar saldo contra ledger.
 Dinheiro é `int64` em unidades menores (escala 2), nunca `float`.
 
 | Documento | Para quê |
 |---|---|
-| [SPEC.md](SPEC.md) | o plano de implementação, a definição de pronto, os cenários e2e em Gherkin e o resultado; o enunciado do desafio que ele cita como "SPEC §N" não está no repositório (ver o aviso no topo) |
+| [DESAFIO.md](DESAFIO.md) | o enunciado original: o que o serviço precisa fazer (as citações "DESAFIO §N" dos outros documentos são daqui) |
+| [SPEC.md](SPEC.md) | o plano de implementação, a definição de pronto, os cenários e2e em Gherkin e o resultado |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | **por que** cada decisão foi tomada; a lógica de negócio (§2), o modelo de dados (§3) e os fluxos (§4) |
 | [CLAUDE.md](CLAUDE.md) | as regras de como escrever código aqui |
 | [infra/README.md](infra/README.md) | Terraform (VPC, ALB, ECS, RDS, SQS) |

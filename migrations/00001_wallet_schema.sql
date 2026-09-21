@@ -9,15 +9,15 @@ CREATE TABLE wallets (
     created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
 
-    -- SPEC 6.2: o par (playerId, currency) identifica uma unica carteira.
+    -- DESAFIO 6.2: o par (playerId, currency) identifica uma unica carteira.
     CONSTRAINT uk_wallet_player_currency UNIQUE (player_id, currency),
-    -- SPEC 5.8: "nao negatividade [deve ser] imposta pelo schema".
+    -- DESAFIO 5.8: "nao negatividade [deve ser] imposta pelo schema".
     CONSTRAINT ck_wallet_balance_non_negative CHECK (balance_minor >= 0)
 );
 
 CREATE TABLE wager_transactions (
     id           UUID        PRIMARY KEY,
-    -- SPEC 6.3: "o schema deve distinguir operacoes internas e externas".
+    -- DESAFIO 6.3: "o schema deve distinguir operacoes internas e externas".
     origin       TEXT        NOT NULL,
     kind         TEXT        NOT NULL,
     status       TEXT        NOT NULL,
@@ -53,23 +53,23 @@ CREATE TABLE wager_transactions (
     settled_at TIMESTAMPTZ
 );
 
--- SPEC 9: a operacao financeira e identificada por (providerId, externalTransactionId) e nao
+-- DESAFIO 9: a operacao financeira e identificada por (providerId, externalTransactionId) e nao
 -- pode ser reaplicada por outra chave.
 CREATE UNIQUE INDEX uk_wager_provider_external
     ON wager_transactions (provider_id, external_transaction_id)
     WHERE origin = 'EXTERNAL';
 
--- SPEC 9: a chave recebida e guardada como veio; o servidor nao a substitui.
+-- DESAFIO 9: a chave recebida e guardada como veio; o servidor nao a substitui.
 CREATE UNIQUE INDEX uk_wager_idempotency_key
     ON wager_transactions (provider_id, idempotency_key)
     WHERE origin = 'EXTERNAL';
 
--- SPEC 6.3: "impedir credito inicial duplicado".
+-- DESAFIO 6.3: "impedir credito inicial duplicado".
 CREATE UNIQUE INDEX uk_wager_single_opening
     ON wager_transactions (wallet_id)
     WHERE kind = 'OPENING';
 
--- SPEC 7: uma referencia nao recebe duas reversoes bem-sucedidas. O indice cobre REFUND e
+-- DESAFIO 7: uma referencia nao recebe duas reversoes bem-sucedidas. O indice cobre REFUND e
 -- ROLLBACK juntos, entao a combinacao dos dois sobre a mesma BET tambem e impedida (ver §2.4).
 CREATE UNIQUE INDEX uk_wager_single_reversal
     ON wager_transactions (provider_id, reference_external_transaction_id)
@@ -96,7 +96,7 @@ CREATE TABLE wallet_ledger_entries (
     balance_after_minor  BIGINT      NOT NULL,
     created_at           TIMESTAMPTZ NOT NULL DEFAULT now(),
 
-    -- SPEC 6.4: "imponha no banco a unicidade de (walletId, transactionId)". E a barreira
+    -- DESAFIO 6.4: "imponha no banco a unicidade de (walletId, transactionId)". E a barreira
     -- contra movimentacao duplicada: mesmo que dois processos passem pela regra em Go, o
     -- segundo INSERT falha.
     CONSTRAINT uk_ledger_wallet_transaction UNIQUE (wallet_id, transaction_id)
@@ -105,7 +105,7 @@ CREATE TABLE wallet_ledger_entries (
 CREATE UNIQUE INDEX uk_ledger_seq ON wallet_ledger_entries (seq);
 CREATE INDEX idx_ledger_wallet_cursor ON wallet_ledger_entries (wallet_id, seq);
 
--- SPEC 5.8 e 6.4: "imutabilidade do ledger [imposta] pelos mecanismos de protecao do banco" e
+-- DESAFIO 5.8 e 6.4: "imutabilidade do ledger [imposta] pelos mecanismos de protecao do banco" e
 -- "a protecao contra edicao ou exclusao". Append-only nao pode depender da disciplina de quem
 -- escreve o SQL.
 -- +goose StatementBegin
@@ -135,7 +135,7 @@ CREATE TABLE inbox_messages (
     received_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
     completed_at  TIMESTAMPTZ,
 
-    -- SPEC 6.5: "unicidade de (consumerName, messageId)".
+    -- DESAFIO 6.5: "unicidade de (consumerName, messageId)".
     CONSTRAINT pk_inbox PRIMARY KEY (consumer_name, message_id)
 );
 
