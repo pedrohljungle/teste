@@ -23,8 +23,6 @@ var outboxColumns = strings.Join([]string{
 	"locked_by", "locked_at", "published_at",
 }, ", ")
 
-var _ outboxiface.Repository = (*postgresRepository)(nil)
-
 type postgresRepository struct {
 	db  *db.Accessor
 	obs *observability.Observer

@@ -15,8 +15,6 @@ import (
 	"github.com/estrategiahq/pedro-test/app/src/libs/observability"
 )
 
-var _ outboxiface.Service = (*service)(nil)
-
 type service struct {
 	repo      outboxiface.Repository
 	publisher outboxiface.Publisher

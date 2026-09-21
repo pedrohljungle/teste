@@ -8,8 +8,6 @@ import (
 	"github.com/estrategiahq/pedro-test/app/src/libs/observability"
 )
 
-var _ persistence.UnitOfWork = (*unitOfWork)(nil)
-
 type unitOfWork struct {
 	accessor *db.Accessor
 	obs      *observability.Observer

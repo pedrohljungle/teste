@@ -97,9 +97,14 @@ Regras:
 - **Handler não importa `services/`; repository não importa `services/`.** O lint cobra. Os
   dois dependem de `interfaces/`.
 - O construtor devolve a **interface** (`func NewService(...) taskiface.Service`); a struct é
-  minúscula.
-- **Toda implementação afirma o contrato em tempo de compilação**:
-  `var _ taskiface.Repository = (*PostgresRepository)(nil)`.
+  minúscula. **É o `return` do construtor que afirma o contrato em tempo de compilação** — não
+  existe `var _ Iface = (*impl)(nil)` neste repositório.
+- Quando o construtor precisa devolver o concreto (porque o tipo tem ciclo de vida próprio, como
+  `auth.Verifier`), quem afirma é a **função de amarração no `module.go`**:
+  `fx.Provide(func(v *Verifier) TokenVerifier { return v })`. O mesmo vale para adapter genérico
+  que satisfaz contrato de domínio (`repositories/module.go`).
+- Porta de runtime (`cronjob.Task`, `jobrunner.Source`) é afirmada **onde o processo é composto**:
+  a chamada de registro em `app/cmd/<processo>/main.go`. Assim o handler não importa o runtime.
 - **Dublê é struct que implementa a interface**, escrita no próprio arquivo de teste — sem
   framework de mock. Os testes de `services/task` são o exemplo.
 - Alias de import quando dois pacotes homônimos se encontram: `taskiface`, `tasksvc`,

@@ -35,8 +35,6 @@ const (
 	discoveryTimeout  = 10 * time.Second
 )
 
-var _ TokenVerifier = (*Verifier)(nil)
-
 // Verifier validates Keycloak access tokens against the realm signing keys.
 type Verifier struct {
 	cfg  config.Keycloak

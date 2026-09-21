@@ -51,8 +51,6 @@ func expected(err error) error {
 	return err
 }
 
-var _ wageringiface.Repository = (*postgresRepository)(nil)
-
 type postgresRepository struct {
 	db  *db.Accessor
 	obs *observability.Observer

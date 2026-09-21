@@ -8,8 +8,6 @@ import (
 	"github.com/estrategiahq/pedro-test/app/src/libs/db"
 )
 
-var _ healthiface.Checker = (*postgresChecker)(nil)
-
 type postgresChecker struct {
 	db *db.Accessor
 }

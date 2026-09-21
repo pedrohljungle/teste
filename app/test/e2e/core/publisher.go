@@ -18,10 +18,10 @@ import (
 )
 
 // registerCronjobs is what cmd/worker does for the recurring work: it puts the outbox publisher and
-// the resolver of pending references on the cronjob runtime through the same PrepareCronjob.
+// the resolver of pending references on the cronjob runtime, the same way and in the same place.
 func registerCronjobs(runner *cronjob.Runner, outbox *outboxhandler.CronjobHandler, reference *referencehandler.CronjobHandler) {
-	outboxhandler.PrepareCronjob(runner, outbox)
-	referencehandler.PrepareCronjob(runner, reference)
+	runner.Register(outbox)
+	runner.Register(reference)
 }
 
 // Publisher is one more, independent instance of the worker's recurring jobs, the outbox publisher and

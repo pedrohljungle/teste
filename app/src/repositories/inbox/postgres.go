@@ -13,8 +13,6 @@ import (
 	"github.com/estrategiahq/pedro-test/app/src/libs/observability"
 )
 
-var _ inboxiface.Repository = (*postgresRepository)(nil)
-
 type postgresRepository struct {
 	db  *db.Accessor
 	obs *observability.Observer

@@ -18,8 +18,6 @@ import (
 // collide with an attribute a consumer may want to read.
 const traceAttributePrefix = "otel-"
 
-var _ outboxiface.Publisher = (*sqsPublisher)(nil)
-
 // sqsPublisher sends events to the FIFO queue of integration events.
 //
 // The routing contract is what a consumer relies on. The group id is the aggregate id, so the

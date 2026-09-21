@@ -26,8 +26,6 @@ func expected(err error) error {
 	return err
 }
 
-var _ walletiface.Repository = (*postgresRepository)(nil)
-
 type postgresRepository struct {
 	db  *db.Accessor
 	obs *observability.Observer

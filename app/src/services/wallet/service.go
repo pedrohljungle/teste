@@ -15,8 +15,6 @@ import (
 	"github.com/estrategiahq/pedro-test/app/src/libs/observability"
 )
 
-var _ walletiface.Service = (*service)(nil)
-
 type service struct {
 	uow      persistenceiface.UnitOfWork
 	wallets  walletiface.Repository

@@ -78,10 +78,19 @@ Três convenções que caem disso:
   método que não faz parte dele.
 - **Os sentinelas moram com as interfaces.** Quem depende só do contrato precisa distinguir as
   falhas, e faz isso com `errors.Is(err, pedidoiface.ErrNotFound)` — não lendo mensagem.
-- **Toda implementação afirma o contrato em tempo de compilação**
-  (`var _ pedidoiface.Repository = (*PostgresRepository)(nil)`). O ganho é a mensagem de erro:
-  sem isso, mudar uma assinatura quebra na fiação do `fx`, em runtime, com um texto que nomeia
-  um módulo e não o método que mudou.
+- **O contrato é afirmado em tempo de compilação, mas sem `var _ Iface = (*impl)(nil)`.** O que
+  importa é o erro não nascer na fiação do `fx`, em runtime, com um texto que nomeia um módulo e
+  não o método que mudou — e para isso basta o `return` do construtor, que já devolve a interface:
+  mudar uma assinatura falha no `return`, apontando o método que falta. Um global só repetiria,
+  numa linha solta, uma checagem que o construtor já faz.
+
+  Onde não há esse `return` porque o construtor devolve o concreto — `auth.Verifier`, que tem
+  ciclo de vida próprio, e o adapter genérico de fila que satisfaz um contrato de domínio —,
+  quem afirma é a **função de amarração no `module.go`**
+  (`fx.Provide(func(v *Verifier) TokenVerifier { return v })`), que é onde a decisão de ligar os
+  dois mora. E uma porta de runtime (`cronjob.Task`) é afirmada pela chamada de registro na
+  `main` do processo. Em todos os casos a checagem está **onde a ligação é feita**, e não numa
+  declaração que só existe para ser verificada.
 
 O resultado prático: a regra de negócio roda contra structs escritas no próprio arquivo de
 teste — sem Postgres, sem SQS, sem Keycloak e sem framework de mock.
@@ -851,11 +860,23 @@ O vocabulário fica explícito, porque os dois rodam no **mesmo processo** (`cmd
 | Runtime | `libs/jobrunner` | **`libs/cronjob`** |
 | Porta | `jobrunner.Source` (`Consume`/`Ack`) | **`cronjob.Task`** (`Run`) |
 | Arquivo no domínio | `handlers/<dominio>/job.go` | **`handlers/<dominio>/cronjob.go`** |
-| Registro | `PrepareWorker(...)` | **`PrepareCronjob(...)`** |
+| Registro | `PrepareWorker(...)`, no domínio | **`Runner.Register(...)`, na `main` do worker** |
 | Handler | `JobHandler` | **`CronjobHandler`** |
 
 Assim **worker** é o processo, **job** é mensagem de fila e **cronjob** é tick periódico — três
 palavras que hoje se confundiriam numa só.
+
+O registro dos dois cai em lugares diferentes de propósito. `PrepareWorker` mora no domínio porque
+**amarrar uma fila a um handler é decisão do domínio** — qual `Source`, qual handler. Um cronjob não
+amarra nada: é só "rode isto de tempos em tempos". Então quem registra é a `main` do worker, com
+`Runner.Register(handler)` — e **é essa chamada que prova, em tempo de compilação, que o handler
+satisfaz `cronjob.Task`**. O ganho é o handler não importar o runtime: `CronjobHandler` é uma struct
+com `Name`, `Interval` e `Run`, testável e legível sem o `libs/cronjob` junto.
+
+Por que não um `group:"cronjobs"` do fx, como os checkers do `/health/ready`: porque o grupo é
+montado por quem **provê**, e `cmd/server` monta os mesmos módulos de handler. As tarefas seriam
+agendadas nos dois processos, e o publisher de outbox passaria a rodar no servidor HTTP. Quem
+decide o que roda é o entrypoint, não o módulo.
 
 O `cronjob` faz o que os dois laços precisam igual e que não é regra de negócio: ticker **com
 jitter** (N réplicas não podem bater no banco no mesmo milissegundo), **tick imediato quando o
@@ -938,8 +959,8 @@ app/src/
 │   ├── wallet/        http.go    POST /wallets, GETs, reconciliation
 │   ├── wagering/      http.go    POST /wagering/transactions, GETs
 │   │                  job.go     PrepareWorker — consumidor SQS
-│   ├── outbox/        cronjob.go PrepareCronjob — publisher da outbox
-│   ├── reference/     cronjob.go PrepareCronjob — pendencia de referencia
+│   ├── outbox/        cronjob.go CronjobHandler — publisher da outbox
+│   ├── reference/     cronjob.go CronjobHandler — pendencia de referencia
 │   ├── health/        ja existe — ganha /health/live e /health/ready
 │   └── identity/      ja existe
 │

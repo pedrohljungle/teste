@@ -18,10 +18,6 @@ import (
 
 // Module wires every adapter of this layer.
 //
-// The queue adapter is domain-agnostic, and it also is what a domain calls the dead letter queue.
-// The binding is here, and not in the queue package, so the adapter does not import a domain.
-var _ wageringiface.DeadLetter = (*queue.SQS)(nil)
-
 // cache, queue and persistence are domain-agnostic: a key-value cache, an SQS queue and the unit
 // of work every domain shares. A domain adapter goes in repositories/<domain>/ with its own
 // module, and binds itself to the contracts in interfaces/<domain>. When a shared adapter has
@@ -36,5 +32,8 @@ var Module = fx.Module("repositories",
 	outbox.Module,
 	inbox.Module,
 	health.Module,
+	// The queue adapter is domain-agnostic, and it also is what a domain calls the dead letter
+	// queue. Binding it here, and not in the queue package, keeps the adapter from importing a
+	// domain, and this function is what holds it to the contract at compile time.
 	fx.Provide(func(q *queue.SQS) wageringiface.DeadLetter { return q }),
 )

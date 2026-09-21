@@ -41,8 +41,8 @@ func NewRunner(obs *observability.Observer) *Runner {
 	return &Runner{obs: obs}
 }
 
-// Register adds a task. Domains call it through their own PrepareCronjob, which the worker
-// entrypoint invokes.
+// Register adds a task. The worker entrypoint calls it with the handlers it wants scheduled, which
+// is where a handler is held to this contract.
 func (r *Runner) Register(task Task) {
 	r.tasks = append(r.tasks, task)
 }

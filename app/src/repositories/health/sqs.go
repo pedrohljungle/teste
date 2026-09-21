@@ -12,8 +12,6 @@ import (
 	"github.com/estrategiahq/pedro-test/app/src/libs/config"
 )
 
-var _ healthiface.Checker = (*sqsChecker)(nil)
-
 type sqsChecker struct {
 	client *sqs.Client
 	queues []string

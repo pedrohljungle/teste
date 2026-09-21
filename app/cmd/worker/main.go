@@ -88,13 +88,19 @@ type workerParams struct {
 // each domain registers itself on the runtime it needs.
 //
 // A queue consumer registers with PrepareWorker, on the job runner: the wagering messages are the
-// first. A recurring task registers
-// with PrepareCronjob, on the cronjob runner. The outbox publisher and the resolver of pending
-// references are of the second kind: each is a tick over the database and has no queue to poll.
+// first. Binding a source to a handler is the domain's to declare, so that function lives with the
+// handler.
+//
+// A recurring task has nothing to bind, so it is registered here, straight on the cronjob runner.
+// That call is also what proves the handler satisfies cronjob.Task: the contract is checked where
+// the process is composed, and the handler package never mentions the runtime. The outbox publisher
+// and the resolver of pending references are of this kind — each is a tick over the database with
+// no queue to poll — and this is the only entrypoint that schedules them: the server builds the same
+// handlers and must not run them.
 func prepareWorkers(lc fx.Lifecycle, p workerParams, obs *observability.Observer) {
 	wageringhandler.PrepareWorker(p.Runner, p.Queue, p.Wagering)
-	outboxhandler.PrepareCronjob(p.Cronjobs, p.Outbox)
-	referencehandler.PrepareCronjob(p.Cronjobs, p.Reference)
+	p.Cronjobs.Register(p.Outbox)
+	p.Cronjobs.Register(p.Reference)
 
 	// Asking for the service account token at boot surfaces a bad credential while the deploy
 	// is still on someone's screen, instead of on the first message at 3am.

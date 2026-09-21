@@ -6,10 +6,7 @@ import (
 
 	outboxiface "github.com/estrategiahq/pedro-test/app/src/interfaces/outbox"
 	"github.com/estrategiahq/pedro-test/app/src/libs/config"
-	"github.com/estrategiahq/pedro-test/app/src/libs/cronjob"
 )
-
-var _ cronjob.Task = (*CronjobHandler)(nil)
 
 // CronjobHandler is the outbox publisher as a recurring task: every tick hands the service the
 // batch to drain. It holds no rule; what to publish, and what to do with a failure, is the
@@ -22,12 +19,6 @@ type CronjobHandler struct {
 // NewCronjobHandler builds the handler.
 func NewCronjobHandler(service outboxiface.Service, cfg config.Outbox) *CronjobHandler {
 	return &CronjobHandler{service: service, interval: cfg.PollInterval}
-}
-
-// PrepareCronjob registers the outbox publisher on the cronjob runtime, mirroring how a domain
-// registers its queue handler with PrepareWorker.
-func PrepareCronjob(runner *cronjob.Runner, h *CronjobHandler) {
-	runner.Register(h)
 }
 
 // Name is what the task appears as on spans and logs.

@@ -68,8 +68,9 @@ repositórios e services. O que muda é o que cada `main` monta.
 | Dado | `repositories/<dom>.PostgresRepository` | o mesmo |
 | Identidade | valida o JWT de quem chamou | service account (`client_credentials`) |
 
-Cada domínio expõe `ServerRoutes`, `PrepareWorker` (mensagem de fila) e `PrepareCronjob` (tarefa
-periódica); as `main` chamam o que cada processo precisa. No vocabulário daqui, **worker** é o
+Cada domínio expõe `ServerRoutes` (rotas) e `PrepareWorker` (mensagem de fila); as tarefas
+periódicas são registradas pela própria `main` do worker (`Runner.Register`), que é o único lugar
+que decide o que roda em cada processo. No vocabulário daqui, **worker** é o
 processo, **job** é uma mensagem do SQS e **cronjob** é um tick periódico (`libs/cronjob`). Detalhes em [ARCHITECTURE §4](ARCHITECTURE.md#7-um-source-code-dois-entrypoints).
 
 ---
