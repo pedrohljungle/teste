@@ -49,6 +49,11 @@ var version = "dev"
 //	@tokenUrl								http://localhost:8080/realms/pedro-test/protocol/openid-connect/token
 //	@scope.openid							Acesso à API
 //
+//	@securityDefinitions.apikey	BearerAuth
+//	@in							header
+//	@name						Authorization
+//	@description				Cole "Bearer" e um token. É o caminho das rotas que exigem um papel de serviço (`internal_service` ou `provider`): o Authorize acima faz password grant, e nenhum usuário do realm tem esses papéis. Pegue o token com `make token-internal` ou `make token-provider`.
+//
 // The tokenUrl above is a placeholder: swag bakes it at generation time, and the realm address
 // differs per environment. It is rewritten from the configuration when the document is served
 // (see docsRoutes), so the Authorize button points at the realm the caller can actually reach.

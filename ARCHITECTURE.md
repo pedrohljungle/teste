@@ -65,6 +65,7 @@ justificativa, está em [CLAUDE.md](CLAUDE.md).
 - [14. Testes](#14-testes)
   - [Unitário — `make test`, em segundos, sem Docker](#unitário--make-test-em-segundos-sem-docker)
   - [Ponta a ponta — `make test-e2e`, em `app/test/`, com testcontainers](#ponta-a-ponta--make-test-e2e-em-apptest-com-testcontainers)
+  - [Como o `core` do e2e funciona](#como-o-core-do-e2e-funciona)
 - [15. O mecanismo: o que o lint cobra](#15-o-mecanismo-o-que-o-lint-cobra)
 - [16. Estrutura](#16-estrutura)
 - [17. Cresce sob demanda](#17-cresce-sob-demanda)
@@ -1913,6 +1914,117 @@ Cinco decisões dessa suíte:
   teste garante?" tem resposta sem ler Go, e é o que permite revisar a *cobertura de
   comportamento* — quais cenários existem — separadamente da implementação. Quando o código e
   o cenário divergirem, o comentário é o bug.
+
+### Como o `core` do e2e funciona
+
+Esta subseção descreve a **máquina** (`app/test/e2e/core/`), não os cenários. Os cenários estão
+nos arquivos de teste, um por Feature, em Gherkin nos comentários.
+
+**Uma `Stack` por execução, criada no `TestMain`.** Subir os containers leva cerca de um minuto, então
+a suíte paga isso uma vez. `core.Start` faz, nesta ordem:
+
+```
+ startInfra ──> Postgres 18 ─┐
+                LocalStack 3.7 (cria as filas por docker/localstack/init-queues.sh)
+                Keycloak 26.7 (importa docker/keycloak/realm-pedro-test.json)
+        │
+        ▼
+ migrate ──> goose (a biblioteca, não um container) aplica migrations/ no Postgres
+        │
+        ▼
+ boot ──> define as variáveis de ambiente, monta o grafo do fx (buildApp) e inicia
+        │   server + worker + cronjobs NO PROCESSO DO TESTE, numa porta livre
+        ▼
+ sinks ──> dois consumidores em segundo plano: a fila de eventos (wager-events) e a DLQ
+```
+
+Os containers são os **mesmos arquivos** que o compose usa (o realm, o script das filas, as
+migrations): o e2e não tem uma cópia de teste da infraestrutura. Um `Ryuk` desligado
+(`TESTCONTAINERS_RYUK_DISABLED=true`, necessário no Colima) significa que a própria suíte
+encerra os containers no fim.
+
+**O que o boot reproduz da `main`.** `buildApp` chama as **mesmas** funções de registro que
+`cmd/server` e `cmd/worker` (`ServerRoutes`, `PrepareWorker`, os `Register` dos cronjobs) e os mesmos
+`fx.Module`. O que o teste não tem é o ciclo de vida de cada `main`. Por isso o servidor e o worker
+rodam juntos: um teste segue a requisição HTTP até a linha que o worker atualizou.
+
+**Instâncias extras, quando o cenário exige mais de uma.** Cada uma é um `fx.App` com pool de
+conexões, verificador de token e memória **próprios**; o que as coordena é só o Postgres.
+
+| Helper | O que sobe |
+|---|---|
+| `Stack.StartServer` | um servidor HTTP independente, noutra porta |
+| `Stack.StartPublisher` | só os cronjobs (publisher da outbox e resolvedor de referências) |
+| `Stack.StartProbe` | um worker mínimo com uma tarefa contadora, para provar o shutdown |
+| `Stack.StartWorkerProcess` | o **binário real** do worker (`go build ./app/cmd/worker`) como processo de sistema operacional, consumindo uma fila criada só para ele, para que nenhum outro consumidor leve a mensagem. É o único jeito honesto de mandar `SIGTERM` |
+| `Stack.Restart` | derruba a aplicação principal e a sobe de novo na mesma porta, contra o mesmo banco e as mesmas filas |
+
+Como as variáveis de ambiente são do processo e a configuração é lida enquanto o grafo é montado,
+o boot de uma instância é serializado (`bootEnv`) e restaura o `PORT` da principal.
+
+**Falhas injetadas nas portas (`core/faults.go`).** O que não dá para provocar de fora é
+injetado por `fx.Decorate` nas **interfaces**, e tudo abaixo delas é o código real:
+
+| Falha | Onde entra |
+|---|---|
+| broker recusa um evento; queda entre publicar e registrar a publicação | `outboxiface.Publisher` e `Repository.Complete` |
+| Postgres indisponível numa consulta | `wageringiface.Repository.FindByKey` (erro `ErrUnavailable`) |
+| kill entre o commit e a remoção da mensagem | `Source.Ack` do consumidor |
+| dependência fora do ar no `/health/ready` | `healthiface.Checker` |
+
+A `Faults` é **compartilhada por todas as instâncias**: uma falha pedida é consumida por quem chegar
+primeiro, como numa frota de verdade.
+
+**Telemetria capturada em memória (`core/telemetry.go`).** Um único `MeterProvider` com um
+`ManualReader` e um `zap` com um núcleo de observação (em `tee`, sem perder o log normal) são
+decorados em toda instância. `Stack.Metric(nome, tags)` lê contadores e histogramas, e
+`Stack.Logs()` devolve as linhas; o cenário lê antes e depois e compara. É assim que se prova que
+uma métrica é emitida e que nenhum log carrega valor monetário ou token. O export OTLP fica desligado
+(`OTEL_EXPORTER_OTLP_ENDPOINT` vazio).
+
+**Banco e filas.** `Stack.DB(t)` devolve **um pool só** para a suíte inteira (um pool por chamada
+esgotava as conexões do Postgres num cenário que lê em laço). `ScratchDatabase` cria um banco vazio ao
+lado, para o que precisa de um schema que ninguém mais tocou (aplicar e reverter as migrations). Os
+`sink` guardam cada entrega da fila de eventos e da DLQ, com grupo, id de deduplicação e atributos.
+
+**Tempos curtos de propósito.** O `boot` configura visibility timeout de 2s, poll de 2s, lease da
+outbox de 3s, backoff de 400ms a 2s, TTL de referência pendente de 5s: um cenário sobre retry,
+expiração ou publisher morto espera segundos, não minutos. Um cenário que precisa que uma pendência
+sobreviva a algo lento move o prazo dela no banco (`holdExpiryFar`), sem tocar no código da aplicação.
+
+#### Credenciais e identidades
+
+O e2e **nunca fabrica um principal**: todo token é **real**, emitido pelo Keycloak do container, e é
+verificado pelo mesmo `Verifier` de produção (assinatura RS256, `iss`, `aud`, expiração).
+
+| Identidade (constante em `core/client.go`) | Client do realm | Como autentica | Papel | Claim extra |
+|---|---|---|---|---|
+| `InternalService` | `pedro-test-wallet-service` | `client_credentials` | `internal_service` | — |
+| `ProviderA` | `provider-a` | `client_credentials` | `provider` | `provider_id = provider-a` |
+| `ProviderB` | `provider-b` | `client_credentials` | `provider` | `provider_id = provider-b` |
+| `ShortLived` | `pedro-test-short-lived` | `client_credentials` | `internal_service` | token de **1 segundo** |
+| `Stack.Token(usuário, senha)` | `pedro-test-api` (público) | *password grant* | `pedro` → `app-admin`; `joana` → nenhum | — |
+
+- **Máquinas, não pessoas.** As quatro primeiras são service accounts com `client_credentials`, como um
+  provedor ou o serviço interno autenticam em produção. Os segredos (`*-secret-local`) estão no
+  arquivo do realm e em `clientSecrets`; são de desenvolvimento e não protegem nada. O password
+  grant existe só para os dois usuários de `/me` e para o Swagger UI.
+- **O `providerId` sai do token.** O mapper `provider-id` do realm escreve o claim `provider_id` no
+  token dos clients de provedor; a aplicação compara com o `providerId` do corpo (divergência é `403`)
+  e usa o claim para decidir de quem é a transação (a de outro provedor responde `404`).
+- **Todo token leva `aud = pedro-test-api`**, por um mapper de audiência em cada client. Sem isso o
+  `Verifier` recusa o token.
+- **Cache de token.** `ClientToken` reutiliza o token por 5 minutos: o realm emite por 15
+  (`accessTokenLifespan` 900s) e a suíte roda em bem menos, então um cenário que envia dezenas de
+  requisições não faz dezenas de chamadas ao Keycloak. **`ShortLived` nunca é cacheado**: o ponto
+  dele é expirar. O cenário pede o token, espera passar de 1s e prova que um token **assinado e
+  expirado** é recusado com `401`.
+- **Emissor.** O container do Keycloak sobe **sem `KC_HOSTNAME` fixo**: a porta é aleatória, e deixar o
+  Keycloak derivar o emissor do `Host` da requisição é o que mantém o `iss` do token igual ao endereço
+  que a suíte usa. No compose é o contrário: o hostname é fixo em `localhost:8080`, e a aplicação
+  alcança o realm por `KEYCLOAK_INTERNAL_URL` (ver §8).
+- **O worker** autentica como `pedro-test-worker` (service account, `client_credentials`), e pede o
+  token no boot para que uma credencial errada apareça no deploy e não na primeira mensagem.
 
 ---
 

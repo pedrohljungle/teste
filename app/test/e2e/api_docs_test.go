@@ -30,6 +30,7 @@ import (
 //     - the document describes the routes that are served
 //     - the document declares the Keycloak flow the page authenticates with
 //     - the document marks the protected operations
+//     - the service routes can be tried from the docs page with a pasted token
 
 // Scenario: the documentation page is served
 //
@@ -112,6 +113,44 @@ func TestDocumentMarksTheProtectedOperations(t *testing.T) {
 	}
 }
 
+// Scenario: the service routes can be tried from the docs page with a pasted token
+//
+//	Given the documentation is enabled
+//	When the Swagger document is requested
+//	Then it defines a BearerAuth scheme, an API key in the Authorization header
+//	And every wallet and wagering route accepts either that scheme or the password grant
+//
+// The password grant of the page logs in a person, and no person of the realm holds a service
+// role, so without the second scheme those routes could not be exercised from the page at all.
+func TestTheServiceRoutesAcceptAPastedToken(t *testing.T) {
+	document := swaggerDocument(t)
+
+	bearer, ok := document.SecurityDefinitions["BearerAuth"]
+	if !ok || bearer.Type != "apiKey" || bearer.In != "header" || bearer.Name != "Authorization" {
+		t.Fatalf("BearerAuth = %+v (defined: %v)", bearer, ok)
+	}
+	for _, route := range []struct{ path, method string }{
+		{"/wallets", "post"}, {"/wallets/{walletId}", "get"}, {"/wallets/{walletId}/ledger", "get"},
+		{"/wallets/{walletId}/reconciliation", "post"}, {"/wagering/transactions", "post"},
+		{"/wagering/transactions/{transactionId}", "get"},
+		{"/providers/{providerId}/wagering/transactions/{externalTransactionId}", "get"},
+	} {
+		alternatives := document.Paths[route.path][route.method].Security
+		if len(alternatives) != 2 || !offers(alternatives, "OAuth2Password") || !offers(alternatives, "BearerAuth") {
+			t.Errorf("%s %s security = %v, want the password grant or a pasted bearer token", route.method, route.path, alternatives)
+		}
+	}
+}
+
+func offers(alternatives []map[string][]string, scheme string) bool {
+	for _, alternative := range alternatives {
+		if _, ok := alternative[scheme]; ok {
+			return true
+		}
+	}
+	return false
+}
+
 // swagger is a deliberately small shape: the suite asserts on the few fields that say what is
 // served and what is protected, not on the whole document.
 type swagger struct {
@@ -122,6 +161,8 @@ type swagger struct {
 		Type     string `json:"type"`
 		Flow     string `json:"flow"`
 		TokenURL string `json:"tokenUrl"`
+		In       string `json:"in"`
+		Name     string `json:"name"`
 	} `json:"securityDefinitions"`
 }
 

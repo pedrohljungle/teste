@@ -64,6 +64,7 @@ type Response struct {
 //	@Failure		409		{object}	structs.APIError
 //	@Failure		503		{object}	structs.APIError
 //	@Security		OAuth2Password
+//	@Security		BearerAuth
 //	@Router			/wallets [post]
 func (h *Handler) Open(c echo.Context) error {
 	var request OpenRequest
@@ -100,6 +101,7 @@ func (h *Handler) Open(c echo.Context) error {
 //	@Failure		404			{object}	structs.APIError
 //	@Failure		503			{object}	structs.APIError
 //	@Security		OAuth2Password
+//	@Security		BearerAuth
 //	@Router			/wallets/{walletId} [get]
 func (h *Handler) Get(c echo.Context) error {
 	id, err := walletID(c)
@@ -147,6 +149,7 @@ type LedgerResponse struct {
 //	@Failure		404			{object}	structs.APIError
 //	@Failure		503			{object}	structs.APIError
 //	@Security		OAuth2Password
+//	@Security		BearerAuth
 //	@Router			/wallets/{walletId}/ledger [get]
 func (h *Handler) Ledger(c echo.Context) error {
 	id, err := walletID(c)
@@ -205,6 +208,7 @@ type ReconciliationResponse struct {
 //	@Failure		404			{object}	structs.APIError
 //	@Failure		503			{object}	structs.APIError
 //	@Security		OAuth2Password
+//	@Security		BearerAuth
 //	@Router			/wallets/{walletId}/reconciliation [post]
 func (h *Handler) Reconcile(c echo.Context) error {
 	id, err := walletID(c)

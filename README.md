@@ -151,6 +151,18 @@ Para chamar uma rota protegida direto dali:
    persiste entre reloads.
 4. Abra `GET /me`, **Try it out**, execute — a resposta traz o que o realm disse sobre você.
 
+**Rotas de carteira e de aposta pelo Swagger UI.** O login acima é de uma *pessoa*, e nenhuma
+pessoa do realm tem `internal_service` nem `provider` (`pedro` é `app-admin`): com esse token, as rotas
+de carteira e de aposta respondem `403`. Para essas, use o segundo esquema do **Authorize**,
+**BearerAuth**, e cole `Bearer <token>` de um dos clients de serviço:
+
+```bash
+make token-internal   # pedro-test-wallet-service: abre carteira, lê carteira e ledger, reconcilia
+make token-provider   # provider-a: envia e lê operações (o providerId do corpo tem que ser provider-a)
+```
+
+Cada rota aceita um esquema **ou** o outro. O token vale 15 minutos; peça outro quando expirar.
+
 O documento cru está em <http://localhost:3000/swagger/doc.json>, útil para gerar client ou
 importar no Insomnia/Bruno.
 

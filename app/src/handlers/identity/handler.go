@@ -31,6 +31,7 @@ func ServerRoutes(e *echo.Echo, h *Handler, requireAuthentication echo.Middlewar
 //	@Success		200	{object}	structs.Principal
 //	@Failure		401	{object}	structs.APIError
 //	@Security		OAuth2Password
+//	@Security		BearerAuth
 //	@Router			/me [get]
 func (h *Handler) Me(c echo.Context) error {
 	var principal structs.Principal

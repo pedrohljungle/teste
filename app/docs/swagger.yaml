@@ -349,6 +349,7 @@ paths:
             $ref: '#/definitions/structs.APIError'
       security:
       - OAuth2Password: []
+      - BearerAuth: []
       summary: Quem sou eu
       tags:
       - identity
@@ -392,6 +393,7 @@ paths:
             $ref: '#/definitions/structs.APIError'
       security:
       - OAuth2Password: []
+      - BearerAuth: []
       summary: Lê uma transação pelo id do provedor
       tags:
       - wagering
@@ -451,6 +453,7 @@ paths:
             $ref: '#/definitions/structs.APIError'
       security:
       - OAuth2Password: []
+      - BearerAuth: []
       summary: Envia uma operação de um provedor
       tags:
       - wagering
@@ -495,6 +498,7 @@ paths:
             $ref: '#/definitions/structs.APIError'
       security:
       - OAuth2Password: []
+      - BearerAuth: []
       summary: Lê uma transação pelo id
       tags:
       - wagering
@@ -541,6 +545,7 @@ paths:
             $ref: '#/definitions/structs.APIError'
       security:
       - OAuth2Password: []
+      - BearerAuth: []
       summary: Abre a carteira de um jogador
       tags:
       - wallets
@@ -582,6 +587,7 @@ paths:
             $ref: '#/definitions/structs.APIError'
       security:
       - OAuth2Password: []
+      - BearerAuth: []
       summary: Lê uma carteira
       tags:
       - wallets
@@ -634,6 +640,7 @@ paths:
             $ref: '#/definitions/structs.APIError'
       security:
       - OAuth2Password: []
+      - BearerAuth: []
       summary: Lê o ledger de uma carteira
       tags:
       - wallets
@@ -678,10 +685,19 @@ paths:
             $ref: '#/definitions/structs.APIError'
       security:
       - OAuth2Password: []
+      - BearerAuth: []
       summary: Reconcilia uma carteira
       tags:
       - wallets
 securityDefinitions:
+  BearerAuth:
+    description: 'Cole "Bearer" e um token. É o caminho das rotas que exigem um papel
+      de serviço (`internal_service` ou `provider`): o Authorize acima faz password
+      grant, e nenhum usuário do realm tem esses papéis. Pegue o token com `make token-internal`
+      ou `make token-provider`.'
+    in: header
+    name: Authorization
+    type: apiKey
   OAuth2Password:
     flow: password
     scopes:

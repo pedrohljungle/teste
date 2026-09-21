@@ -81,6 +81,7 @@ type TransactionResponse struct {
 //	@Failure		422				{object}	TransactionResponse
 //	@Failure		503				{object}	structs.APIError
 //	@Security		OAuth2Password
+//	@Security		BearerAuth
 //	@Router			/wagering/transactions [post]
 func (h *Handler) Submit(c echo.Context) error {
 	operation, err := readOperation(c)
@@ -209,6 +210,7 @@ type TransactionDetail struct {
 //	@Failure		404				{object}	structs.APIError
 //	@Failure		503				{object}	structs.APIError
 //	@Security		OAuth2Password
+//	@Security		BearerAuth
 //	@Router			/wagering/transactions/{transactionId} [get]
 func (h *Handler) Get(c echo.Context) error {
 	provider, err := actingProvider(c)
@@ -240,6 +242,7 @@ func (h *Handler) Get(c echo.Context) error {
 //	@Failure		404						{object}	structs.APIError
 //	@Failure		503						{object}	structs.APIError
 //	@Security		OAuth2Password
+//	@Security		BearerAuth
 //	@Router			/providers/{providerId}/wagering/transactions/{externalTransactionId} [get]
 func (h *Handler) GetByExternal(c echo.Context) error {
 	if err := authorizeProvider(c, c.Param("providerId")); err != nil {

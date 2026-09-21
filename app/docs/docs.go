@@ -86,6 +86,9 @@ const docTemplate = `{
                 "security": [
                     {
                         "OAuth2Password": []
+                    },
+                    {
+                        "BearerAuth": []
                     }
                 ],
                 "description": "Devolve quem chamou, como o realm descreveu: subject, username, e-mail e papéis.",
@@ -117,6 +120,9 @@ const docTemplate = `{
                 "security": [
                     {
                         "OAuth2Password": []
+                    },
+                    {
+                        "BearerAuth": []
                     }
                 ],
                 "description": "O providerId do caminho precisa ser o do token: outro é 403, decidido antes de tocar em qualquer dado.",
@@ -182,6 +188,9 @@ const docTemplate = `{
                 "security": [
                     {
                         "OAuth2Password": []
+                    },
+                    {
+                        "BearerAuth": []
                     }
                 ],
                 "description": "Aplica BET, WIN, LOSS, REFUND ou ROLLBACK a uma carteira, uma única vez, por mais que seja reenviada. O header Idempotency-Key é obrigatório e nunca é substituído pelo servidor. Mesma chave e mesmo conteúdo devolvem o resultado gravado, com o saldo observado no processamento original (200 ou 422, com idempotentReplay true). Mesma chave com outro conteúdo, ou a mesma operação sob outra chave, é 409. O providerId do corpo precisa ser o do token.\nDistinguível pelo status: 200 processada, 202 aguardando referência, 400 entrada inválida (nada gravado), 409 conflito de idempotência, 422 rejeição de negócio (com failureCode, gravada e reproduzível), 503 indisponibilidade transitória (tente de novo).",
@@ -270,6 +279,9 @@ const docTemplate = `{
                 "security": [
                     {
                         "OAuth2Password": []
+                    },
+                    {
+                        "BearerAuth": []
                     }
                 ],
                 "description": "Permite acompanhar uma pendência (tentativas, próxima olhada e expiração) e consultar o código de uma rejeição ou falha. Uma transação de outro provedor responde 404, exatamente como uma que não existe: perguntar não revela de quem é.",
@@ -334,6 +346,9 @@ const docTemplate = `{
                 "security": [
                     {
                         "OAuth2Password": []
+                    },
+                    {
+                        "BearerAuth": []
                     }
                 ],
                 "description": "Cria a carteira na moeda do saldo inicial. Com saldo positivo, cria também a transação OPENING, o crédito no ledger e os eventos, no mesmo commit. Com saldo zero, cria só a carteira. Restrita ao serviço interno.",
@@ -403,6 +418,9 @@ const docTemplate = `{
                 "security": [
                     {
                         "OAuth2Password": []
+                    },
+                    {
+                        "BearerAuth": []
                     }
                 ],
                 "description": "Devolve o saldo e a versão atuais. Restrita ao serviço interno.",
@@ -467,6 +485,9 @@ const docTemplate = `{
                 "security": [
                     {
                         "OAuth2Password": []
+                    },
+                    {
+                        "BearerAuth": []
                     }
                 ],
                 "description": "Paginado por cursor opaco, do lançamento mais antigo para o mais novo. A ordem é a posição que o banco deu a cada lançamento, que não muda nem se repete: um lançamento gravado enquanto o cliente lê aparece numa página posterior, e nenhum é pulado nem visto duas vezes. Restrita ao serviço interno.",
@@ -543,6 +564,9 @@ const docTemplate = `{
                 "security": [
                     {
                         "OAuth2Password": []
+                    },
+                    {
+                        "BearerAuth": []
                     }
                 ],
                 "description": "Reconstrói o saldo a partir do ledger, abertura incluída, e compara com o saldo gravado, os dois lidos de uma mesma visão consistente dos dados. Não altera nada: uma divergência vai na resposta, no log e numa métrica, e nunca é corrigida. Restrita ao serviço interno.",
@@ -980,6 +1004,12 @@ const docTemplate = `{
         }
     },
     "securityDefinitions": {
+        "BearerAuth": {
+            "description": "Cole \"Bearer\" e um token. É o caminho das rotas que exigem um papel de serviço (` + "`" + `internal_service` + "`" + ` ou ` + "`" + `provider` + "`" + `): o Authorize acima faz password grant, e nenhum usuário do realm tem esses papéis. Pegue o token com ` + "`" + `make token-internal` + "`" + ` ou ` + "`" + `make token-provider` + "`" + `.",
+            "type": "apiKey",
+            "name": "Authorization",
+            "in": "header"
+        },
         "OAuth2Password": {
             "type": "oauth2",
             "flow": "password",

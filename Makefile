@@ -112,3 +112,17 @@ token: ## Print an access token for the API (pedro/pedro)
 		-d "username=$(USERNAME)" \
 		-d "password=$(PASSWORD)" \
 		| python3 -c "import sys,json;print(json.load(sys.stdin)['access_token'])"
+
+# The service clients of the realm (client_credentials), for the routes that need a service role.
+# Paste the output into the Authorize button of the docs page, under BearerAuth, as "Bearer <token>".
+token-internal: ## Print a token of the internal service (opens wallets, reads ledger, reconciles)
+	@curl -s -X POST "$(KEYCLOAK_URL)/realms/$(REALM)/protocol/openid-connect/token" \
+		-d grant_type=client_credentials -d client_id=pedro-test-wallet-service \
+		-d client_secret=wallet-service-secret-local \
+		| python3 -c "import sys,json;print(json.load(sys.stdin)['access_token'])"
+
+token-provider: ## Print a token of provider-a (sends wagering operations)
+	@curl -s -X POST "$(KEYCLOAK_URL)/realms/$(REALM)/protocol/openid-connect/token" \
+		-d grant_type=client_credentials -d client_id=provider-a \
+		-d client_secret=provider-a-secret-local \
+		| python3 -c "import sys,json;print(json.load(sys.stdin)['access_token'])"
