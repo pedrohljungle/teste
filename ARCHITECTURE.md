@@ -25,11 +25,10 @@ Mais dois pacotes-folha: `entities/` (espelho de tabela) e `structs/` (o que atr
 DTO, envelope de mensagem, principal, o modelo de erro da API). **`structs/` é dado**: regra
 que viaja dentro de um DTO é regra aplicada em alguns caminhos e esquecida em outros.
 
-**Este repositório não tem domínio nenhum.** `interfaces/`, `services/` e as pastas de domínio
-das outras camadas estão vazias de propósito: o que está aqui é o esqueleto e a infraestrutura,
-e o primeiro domínio real é criado por quem for usá-lo. O que sobrou de rota — `/health` e
-`/me` — não é domínio: são as duas rotas que qualquer serviço tem, independentemente do que
-ele faça.
+**O domínio implementado é o de carteira e apostas de provedores** (`SPEC.md`): `wallet`,
+`wagering`, `inbox`, `outbox` e a porta `persistence` (a transação, que não é domínio). Os
+exemplos com `pedido` ao longo deste documento são ilustrativos das *regras de camada*, não do
+domínio real. `/health*` e `/me` não são domínio: são as rotas que qualquer serviço tem.
 
 Três consequências que não são óbvias:
 
@@ -275,10 +274,18 @@ permitido em diferença interna (a reconciliação precisa dele).
   da fila: repetir não muda o resultado.
 
 **Retomada durável.** Operações sem dependência são concluídas **de forma síncrona**, em uma
-transação — não existe commit intermediário de aceite, então não há `PENDING` órfão no caminho
-feliz. `PENDING` permanece no schema como estado inicial do agregado e é varrido pelo worker
-de retomada (`idx_wager_pending`), que cobre a interrupção entre o registro e a conclusão.
-`PENDING_REFERENCE` é a pendência de verdade, e tem o seu próprio worker.
+transação: o `INSERT` como `PENDING`, a movimentação, o ledger, a transição para o estado terminal
+e a outbox são o **mesmo commit**. Não existe commit intermediário de aceite (o SPEC §6.3 permite),
+então **nenhuma linha `PENDING` chega a ser confirmada**: uma interrupção antes do commit desfaz
+tudo, e o reenvio da operação a refaz do zero (idempotência), e uma interrupção depois do commit
+encontra a transação já terminal. Não há, por isso, um worker que varra `PENDING` — ele não teria o
+que varrer. O índice parcial `idx_wager_pending` existe no schema e fica vazio; é a marca do lugar
+onde um aceite assíncrono, se um dia houver, precisaria de um worker.
+
+A pendência de verdade é **`PENDING_REFERENCE`**: ela é confirmada no banco (com tentativas,
+próxima tentativa e expiração na própria linha) e tem o seu worker, `libs/cronjob` → 
+`services/wagering.ResolvePending`, que roda em **toda** instância do worker. Uma instância que
+morre deixa a pendência como estava, e outra a retoma na próxima passagem (cenário F9 do e2e).
 ### 2.4 Referências e reversões
 
 `REFUND` e `ROLLBACK` resolvem a referência por `(providerId, referenceExternalTransactionId)`.
@@ -916,7 +923,7 @@ muda o adapter e a criação da fila. Nem o service nem o handler mudam."* É o 
                         │            Keycloak (IdP)           │
                         │  realm · client_credentials · JWKS  │
                         └───────────────┬─────────────────────┘
-                                        │ valida no boot (ja existe)
+                                        │ valida no boot
   Provider ──Bearer JWT──> ┌────────────┴───────────────┐
                            │   cmd/server (Echo)        │
                            │   middleware na rota       │
@@ -961,31 +968,35 @@ app/src/
 │   │                  job.go     PrepareWorker — consumidor SQS
 │   ├── outbox/        cronjob.go CronjobHandler — publisher da outbox
 │   ├── reference/     cronjob.go CronjobHandler — pendencia de referencia
-│   ├── health/        ja existe — ganha /health/live e /health/ready
-│   └── identity/      ja existe
+│   ├── health/        /health, /health/live e /health/ready
+│   └── identity/      /me
 │
 ├── services/
-│   ├── wallet/        opening.go · query.go · reconciliation.go
-│   ├── wagering/      service.go     o caso de uso compartilhado HTTP+SQS
-│   │                  reference.go   resolucao da pendencia
-│   └── outbox/        publisher.go
+│   ├── wallet/        service.go (abertura) · query.go · reconciliation.go
+│   ├── wagering/      service.go  Submit — o caso de uso compartilhado HTTP+SQS
+│   │                  inbound.go  Receive — o mesmo caso de uso, dentro da inbox
+│   │                  decision.go regras por tipo · store.go gravacao · query.go
+│   │                  reference.go resolucao da pendencia · observe.go metricas
+│   └── outbox/        service.go  PublishDue
 │
 ├── repositories/
 │   ├── wallet/        postgres.go
 │   ├── wagering/      postgres.go
 │   ├── inbox/         postgres.go
-│   ├── outbox/        postgres.go
+│   ├── outbox/        postgres.go (claim/complete/release) · sqs.go (publisher)
 │   ├── persistence/   postgres.go — adapter generico da transacao
-│   └── queue/         sqs.go — ja existe, ganha FIFO
+│   ├── health/        postgres.go · sqs.go — checkers do /health/ready
+│   └── queue/         sqs.go — consumo FIFO e dead letter
 │
-├── entities/          wallet.go · wager_transaction.go · ledger_entry.go
-│                      outbox_event.go · inbox_message.go
-├── structs/           money.go · cursor.go · events.go · wager_message.go
-│                      principal.go (ja existe)
+├── entities/          money.go · wallet.go · wager_transaction.go · ledger_entry.go
+│                      outbox_event.go · inbox_message.go · operation_payload.go · failure.go
+├── structs/           cursor.go · ledger_page.go · reconciliation.go · wager_message.go
+│                      wager_outcome.go · money_dto.go · principal.go · api_error.go ...
 └── libs/
-    ├── cronjob/       NOVO — runtime periodico, irmao do jobrunner
-    ├── db/            ja existe — ganha tx.go (Accessor + tx no contexto)
-    └── ...            o resto ja existe
+    ├── cronjob/       runtime periodico, irmao do jobrunner
+    ├── jobrunner/     runtime da fila (SQS)
+    ├── db/            pool pgx, Accessor e transacao no contexto (tx.go)
+    └── ...            config, observability, middleware, auth, awsclients, bootstrap
 ```
 ### 4.4 Onde cada regra mora
 
@@ -1849,15 +1860,19 @@ app/
 │   ├── server/    Echo, middlewares, ServerRoutes por domínio, lifecycle
 │   └── worker/    jobrunner, PrepareWorker por domínio, probe próprio
 ├── src/
-│   ├── interfaces/     os contratos. Folha: as três camadas apontam para cá. VAZIA hoje.
+│   ├── interfaces/     os contratos. Folha: as três camadas apontam para cá.
+│   │   └── wallet/ wagering/ inbox/ outbox/ persistence/ health/
 │   ├── handlers/       entrega. module.go agrega; o código vive por domínio.
+│   │   ├── wallet/ wagering/ outbox/ reference/   HTTP, fila e cronjobs do domínio
 │   │   ├── health/         probe do orquestrador (não é domínio)
 │   │   └── identity/       quem é quem chamou (não é domínio)
-│   ├── services/       regra de negócio, implementando os contratos. VAZIA hoje.
+│   ├── services/       regra de negócio, implementando os contratos.
+│   │   └── wallet/ wagering/ outbox/
 │   ├── repositories/   adapters de I/O
+│   │   ├── wallet/ wagering/ inbox/ outbox/ persistence/ health/   Postgres (e SQS na outbox)
 │   │   └── queue/          adapter de SQS, carrega bytes (não é domínio)
-│   ├── entities/       espelho das tabelas. Folha. VAZIA hoje.
-│   ├── structs/        o que atravessa camadas (QueueMessage, Principal, APIError)
+│   ├── entities/       agregados encapsulados (Wallet, WagerTransaction, ...). Folha.
+│   ├── structs/        o que atravessa camadas (QueueMessage, Principal, APIError, ...)
 │   └── libs/
 │       ├── appinfo/        identidade da aplicação (a segregação da telemetria nasce aqui)
 │       ├── bootstrap/      os módulos comuns aos dois processos
@@ -1867,7 +1882,8 @@ app/
 │       ├── db/             pool pgx + ciclo de vida
 │       ├── awsclients/     client do SQS
 │       ├── auth/           adapter do Keycloak (verificador + service account)
-│       └── jobrunner/      runtime da fila (laço, concorrência, ack, desligamento)
+│       ├── jobrunner/      runtime da fila (laço, concorrência, ack, desligamento)
+│       └── cronjob/        runtime das tarefas periódicas (outbox, referências pendentes)
 └── test/
     └── e2e/            testcontainers: fluxos de ponta a ponta do backend
 docker/                 Dockerfile dos apps e do goose, realm do Keycloak, init do LocalStack
@@ -2101,7 +2117,7 @@ linha travada no Postgres, e um cache de saldo transformaria a reconciliação (
 cache.
 
 Fica registrado como **TO DO**, e não como decisão, que um cache pode aliviar carga do banco, junto
-com cache de CDN na borda (§17), **mas exige análise maior antes de entrar**:
+com cache de CDN na borda (§20), **mas exige análise maior antes de entrar**:
 
 - **O que é seguro cachear.** Candidatos: leitura de transação já em estado terminal (`PROCESSED`
   ou `REJECTED` não mudam) e páginas do ledger fechadas por cursor (o ledger é append-only, então
@@ -2116,3 +2132,50 @@ com cache de CDN na borda (§17), **mas exige análise maior antes de entrar**:
 - **Onde ficaria.** Um adapter atrás de uma porta declarada pelo service (`Cache`), em
   `repositories/`, como qualquer I/O (§1); o lint já impede um service de importar o cliente.
   Reintroduzi-lo é acrescentar um módulo, um container no compose e no e2e, e um módulo Terraform.
+
+---
+
+## 23. Limitações, interpretações adotadas e trabalho não concluído
+
+O SPEC §15 pede que isto seja explícito. Está aqui num lugar só; o *porquê* de cada ponto mora na
+seção citada.
+
+### Interpretações onde o SPEC deixa margem
+
+| Ponto | O que foi adotado | Onde |
+|---|---|---|
+| `PENDING` e "retomada durável" | operações sem dependência concluem numa transação, sem commit de aceite: **nenhum `PENDING` é confirmado**, então não há o que varrer. A pendência durável é `PENDING_REFERENCE`, retomada por qualquer instância | §2.3 |
+| Reversões sobre a mesma aposta | **uma reversão por referência, de qualquer tipo** (`REFERENCE_ALREADY_REVERSED`) — mais estrito que "do mesmo tipo", e cobre `REFUND` + `ROLLBACK` sobre o mesmo débito | §2.4 |
+| Referência que existe mas não teve sucesso | `REJECTED` na hora com `REFERENCE_NOT_PROCESSED`; não se espera por quem nunca terá sucesso | §2.4 |
+| Referência que nunca chega | `REJECTED` com `REFERENCE_NOT_FOUND` ao esgotar TTL ou tentativas, com o evento de rejeição | §2.4 |
+| `FAILED` | só o estouro de `int64` num saldo (falha permanente que retry não conserta); auditável, sem evento | §2.3 |
+| Replay | devolve o saldo **observado no processamento original**, guardado na transação | §2.6 |
+| Leituras | carteira e ledger só para `internal_service`; o provedor lê só as próprias transações, e a de outro provedor responde `404`, igual à inexistente | §8 |
+| Ordem dos eventos | garantida **por agregado** (`MessageGroupId` = id do agregado), não entre agregados | §4.6 |
+
+### Limitações
+
+- **Ledger de partidas dobradas** (opcional no SPEC) não foi feito: o ledger de uma perna cobre a
+  auditoria pedida.
+- **Reversão parcial** está fora do escopo, por definição do SPEC §7.
+- **Multi-moeda em operação**: o tipo carrega a moeda e há testes de incompatibilidade, mas os
+  cenários principais rodam em BRL, como o SPEC permite.
+- **Reconciliação é sob demanda** (`POST /wallets/:id/reconciliation`); não há job periódico que a
+  dispare.
+- **Sem cache** e **sem teste de carga** (§22). Tracing existe pelo `Observer`; dashboards não.
+- **Terraform não foi aplicado**: é o `plan` pronto, com contas de exemplo (§19).
+- **Broker**: em produção, o acesso ao SQS é por papéis IAM separados para server e worker
+  (§19); localmente o LocalStack aceita qualquer credencial. As validações de domínio ficam no
+  consumidor de qualquer forma.
+
+### Como a verificação se aproxima do que o SPEC descreve
+
+- **"Três processos independentes"** são **três instâncias no mesmo processo de teste**, cada uma
+  com pool de conexões, verificador de token e memória próprios; o que as coordena é o Postgres,
+  como seria entre processos. O cenário de `SIGTERM` usa o **binário real do worker**, num
+  processo de sistema operacional.
+- **"Interromper o consumidor entre o commit e a remoção da mensagem"** é uma falha injetada no
+  `Ack` (`Faults.FailAcknowledging`): o commit acontece e a mensagem não é apagada, que é o estado
+  que o kill deixaria. Não há como matar um processo exatamente nesse ponto.
+- **`go test -race`** roda nos unitários (`make test`) e na suíte e2e (`make test-e2e`), onde as
+  instâncias e os workers vivem no processo do teste e portanto são observados pelo detector.

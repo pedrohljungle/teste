@@ -1,6 +1,6 @@
 # pedro-test
 
-Esqueleto de backend Go: **Hexagonal (Ports & Adapters)**, dois processos saindo do mesmo
+Backend Go de carteira e apostas: **Hexagonal (Ports & Adapters)**, dois processos saindo do mesmo
 código (servidor HTTP e worker de fila), **Uber `fx`** para injeção de dependência e ciclo de
 vida, **Keycloak** como IDP, **SQS** como fila, **pgx** no Postgres, **Swagger** (swag + Swagger
 UI) na doc de API, **OpenTelemetry** exportando direto (sem coletor) e **`zap`** no log.
@@ -17,6 +17,21 @@ Dinheiro é `int64` em unidades menores (escala 2), nunca `float`.
 | [ARCHITECTURE.md](ARCHITECTURE.md) | **por que** cada decisão foi tomada; a lógica de negócio (§2), o modelo de dados (§3) e os fluxos (§4) |
 | [CLAUDE.md](CLAUDE.md) | as regras de como escrever código aqui |
 | [infra/README.md](infra/README.md) | Terraform (VPC, ALB, ECS, RDS, SQS) |
+
+---
+
+## Pré-requisitos
+
+| Precisa de | Para | Versão |
+|---|---|---|
+| Docker (com Compose v2) | subir a stack e rodar a suíte e2e | qualquer recente |
+| Go | compilar, rodar os testes fora do Docker | **1.26** (declarada em `go.mod` e no `Dockerfile`) |
+| `make` | atalhos (`make help` lista) | — |
+| `goose` | migrations fora do Docker | `go install github.com/pressly/goose/v3/cmd/goose@v3.28.0` |
+| `swag` | só para regenerar a doc da API (`make docs`) | `go install github.com/swaggo/swag/cmd/swag@v1.16.6` |
+
+No Colima, o socket do Docker não fica em `/var/run/docker.sock`: `make test-e2e` já aponta
+`DOCKER_HOST` para o do Colima (sobrescreva a variável se o seu for outro).
 
 ---
 
@@ -231,20 +246,24 @@ Selecione o datasource **Tempo**, aba **TraceQL**, e cole:
 { resource.service.name = "pedro-test-server" }
 ```
 
-Abrindo o trace de uma requisição, as camadas aparecem uma dentro da outra. Com um domínio que
-publique na fila, o trace continua no worker — o `traceparent` viaja nas *message attributes*
-do SQS, então servidor e worker compartilham o `trace_id` e o tempo de fila fica visível entre
-os dois:
+Abrindo o trace de uma requisição, as camadas aparecem uma dentro da outra. Quando a operação
+passa pela fila, o trace continua no worker — o `traceparent` viaja nas *message attributes*
+do SQS, então quem publicou e o worker compartilham o `trace_id` e o tempo de fila fica visível
+entre os dois:
 
 ```
 GET /me                                pedro-test-server   (span do servidor)
 └─ GET /me                               app.layer=handler
    └─ Keycloak.Verify                    app.layer=gateway
 
-POST /pedidos                          pedro-test-server
-└─ pedido.Service.Create                 app.layer=service
-   └─ queue.Publish                      app.layer=repository
-      └─ pedido.JobHandler.Handle   pedro-test-worker   app.layer=handler   (mesmo trace_id)
+POST /wagering/transactions            pedro-test-server
+└─ POST /wagering/transactions           app.layer=handler
+   └─ wagering.Service.Submit            app.layer=service
+      ├─ wagering.Repository.FindByKey   app.layer=repository
+      └─ persistence.UnitOfWork.Atomic   app.layer=repository
+
+wagering.JobHandler.Handle             pedro-test-worker   app.layer=handler   (mesmo trace_id da mensagem)
+└─ wagering.Service.Receive              app.layer=service
 ```
 
 Consultas que valem guardar:
@@ -383,18 +402,41 @@ Com Postgres, LocalStack e Keycloak no ar:
 ```bash
 cp .env.example .env
 go install github.com/pressly/goose/v3/cmd/goose@v3.28.0
-make migrate-up      # make migrate-down desfaz a última
+docker compose up -d postgres localstack keycloak   # ou os seus, nas mesmas portas do .env.example
+make migrate-up      # make migrate-down desfaz a última; make migrate-status mostra o estado
 make run-server      # noutro terminal: make run-worker
 ```
 
 ### Testes
 
 ```bash
-make test        # unitários, sem Docker: services, entities e structs, com -race
-make coverage    # piso de 80% em services/ (hoje ~89%)
-make test-e2e    # precisa de Docker: Postgres, LocalStack e Keycloak em containers
-make verify      # tudo acima mais gofmt, go vet e lint
+go test ./...        # unitários, sem Docker (a suíte e2e fica atrás da build tag e2e)
+go test -race ./...  # o mesmo com o detector de corrida (é o que `make test` roda)
+go vet ./...
+
+make coverage        # piso de 80% em services/ (hoje ~89%)
+make test-e2e        # precisa de Docker: Postgres, LocalStack e Keycloak em containers
+make verify          # tudo acima mais gofmt, go vet e lint
 ```
+
+O `make test-e2e` é este comando, com o `DOCKER_HOST` do Colima quando ele não está definido:
+
+```bash
+TESTCONTAINERS_RYUK_DISABLED=true go test -race -tags e2e -count=1 -timeout 30m ./app/test/...
+go test -race -tags e2e -count=1 -run 'TestFiftyParallel' ./app/test/...   # um cenário só
+```
+
+**Preparar as dependências dos testes:** nada além do Docker. Os containers (Postgres, LocalStack
+com as filas criadas por `docker/localstack/init-queues.sh`, Keycloak com o realm importado) são
+criados pela própria suíte, as migrations são aplicadas por ela e tudo é destruído no fim. A
+primeira execução baixa as imagens; depois disso a suíte leva cerca de dois minutos.
+
+**Integração, múltiplas instâncias e simulação de falha** estão todas nessa mesma suíte, por
+arquivo (`app/test/e2e/`): `concurrency_test.go` (50 apostas iguais, 80+80 sobre 100, três
+instâncias, HTTP × SQS), `recovery_test.go` (kill entre commit e ack, retomada por outra instância,
+restart, `SIGTERM` num processo real), `outbox_test.go` (publishers concorrentes, broker fora do ar,
+queda entre publicar e confirmar) e `lifecycle_and_health_test.go` (boot, shutdown, readiness com
+Postgres ou SQS fora). As falhas são injetadas nas portas por `app/test/e2e/core/faults.go`.
 
 A suíte e2e (`app/test/e2e`) tem uma Feature por arquivo, em Gherkin nos comentários; os cenários
 estão listados em [SPEC-claude.md](SPEC-claude.md). Ela sobe o servidor e o worker no mesmo

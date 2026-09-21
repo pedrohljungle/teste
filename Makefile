@@ -28,7 +28,8 @@ test: ## Run the unit tests with the race detector
 	go test -race -failfast -timeout=120s ./...
 
 # The end to end suite starts Postgres, LocalStack and Keycloak with testcontainers, so
-# it is behind a build tag: `make test` stays fast and needs no Docker.
+# it is behind a build tag: `make test` stays fast and needs no Docker. It runs with -race as well:
+# the server, the workers and the extra instances live in the test process, so the detector sees them.
 #
 # Colima does not publish /var/run/docker.sock, so DOCKER_HOST has to name its socket; Ryuk
 # (the container reaper) does not work through it either, and the suite terminates its own
@@ -36,7 +37,7 @@ test: ## Run the unit tests with the race detector
 test-e2e: ## Run the end to end suite (needs Docker)
 	DOCKER_HOST=$${DOCKER_HOST:-unix://$$HOME/.colima/default/docker.sock} \
 	TESTCONTAINERS_RYUK_DISABLED=true \
-	go test -tags e2e -count=1 -timeout 20m ./app/test/...
+	go test -race -tags e2e -count=1 -timeout 30m ./app/test/...
 
 # Coverage is measured over services/, where the business rules live. A project-wide number
 # goes up when someone tests a getter and down when someone writes a rule: it measures volume,

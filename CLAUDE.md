@@ -60,9 +60,9 @@ interfaces/          handlers/            services/            repositories/
                      └── identity/
 ```
 
-**Hoje não há domínio nenhum**: `interfaces/`, `services/` e as pastas de domínio estão vazias
-de propósito. Criar o primeiro é criar uma pasta em cada camada que ele toca, mais a linha no
-`module.go` da camada e no `main` do processo.
+**Domínios que existem hoje**: `wallet`, `wagering`, `inbox`, `outbox` (e a porta `persistence`).
+Criar um novo é criar uma pasta em cada camada que ele toca, mais a linha no `module.go` da camada
+e no `main` do processo.
 
 - **Domínio novo = uma pasta em cada camada que ele toca**, com `module.go` próprio, somada à
   linha no `module.go` da camada.
@@ -278,8 +278,8 @@ func PrepareWorker(runner *jobrunner.Runner, source jobrunner.Source, h *JobHand
 - As chaves do realm são carregadas **no start** (`fx.Lifecycle.OnStart`, com retry).
 - `KEYCLOAK_ISSUER` (endereço externo, o do claim `iss`) e `KEYCLOAK_INTERNAL_URL` (por onde a
   aplicação alcança o IDP) são campos diferentes. Não misturar.
-- Papel na borda: `RequireRealmRole("algum-papel")`, também na rota. Existe e não tem uso hoje —
-  nenhuma rota do scaffold exige papel. Autorização que precisa olhar o dado é regra de
+- Papel na borda: `RequireRealmRole("algum-papel")`, também na rota. É o que protege as rotas do domínio:
+  `internal_service` nas de carteira, `provider` nas de aposta. Autorização que precisa olhar o dado é regra de
   negócio e vai no service.
 
 ## 12. Migrações
