@@ -11,20 +11,23 @@ import (
 
 	"github.com/estrategiahq/pedro-test/app/src/handlers"
 	outboxhandler "github.com/estrategiahq/pedro-test/app/src/handlers/outbox"
+	referencehandler "github.com/estrategiahq/pedro-test/app/src/handlers/reference"
 	"github.com/estrategiahq/pedro-test/app/src/libs/appinfo"
 	"github.com/estrategiahq/pedro-test/app/src/libs/bootstrap"
 	"github.com/estrategiahq/pedro-test/app/src/libs/cronjob"
 )
 
-// registerOutboxCronjob is what cmd/worker does for the outbox: it puts the handler on the cronjob
-// runtime through the same PrepareCronjob.
-func registerOutboxCronjob(runner *cronjob.Runner, handler *outboxhandler.CronjobHandler) {
-	outboxhandler.PrepareCronjob(runner, handler)
+// registerCronjobs is what cmd/worker does for the recurring work: it puts the outbox publisher and
+// the resolver of pending references on the cronjob runtime through the same PrepareCronjob.
+func registerCronjobs(runner *cronjob.Runner, outbox *outboxhandler.CronjobHandler, reference *referencehandler.CronjobHandler) {
+	outboxhandler.PrepareCronjob(runner, outbox)
+	referencehandler.PrepareCronjob(runner, reference)
 }
 
-// Publisher is one more, independent instance of the outbox publisher: its own connection pool, its
-// own SQS client and its own claim name, sharing nothing with the others but the database and the
-// queue. Several of them running at once is the situation the outbox has to be correct in.
+// Publisher is one more, independent instance of the worker's recurring jobs, the outbox publisher and
+// the resolver of pending references: its own connection pool, its own SQS client and its own claim
+// name, sharing nothing with the others but the database and the queue. Several of them running at
+// once is the situation both jobs have to be correct in.
 type Publisher struct {
 	app *fx.App
 }
@@ -41,7 +44,7 @@ func (s *Stack) StartPublisher(t *testing.T, name string) *Publisher {
 		cronjob.Module,
 		s.Faults.options(),
 
-		fx.Invoke(registerOutboxCronjob),
+		fx.Invoke(registerCronjobs),
 		fx.Invoke(cronjob.Run),
 
 		fx.NopLogger,

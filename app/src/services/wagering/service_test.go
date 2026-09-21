@@ -15,6 +15,7 @@ import (
 	persistenceiface "github.com/estrategiahq/pedro-test/app/src/interfaces/persistence"
 	wageringiface "github.com/estrategiahq/pedro-test/app/src/interfaces/wagering"
 	walletiface "github.com/estrategiahq/pedro-test/app/src/interfaces/wallet"
+	"github.com/estrategiahq/pedro-test/app/src/libs/config"
 	"github.com/estrategiahq/pedro-test/app/src/libs/observability"
 )
 
@@ -34,6 +35,8 @@ type memory struct {
 	beforeInsert func()
 	// failWalletLock makes the wallet read fail, as a database that cannot be reached does.
 	failWalletLock error
+	// clock is what the service reads as the current time. A test advances it to let a wait expire.
+	clock time.Time
 	// committedElsewhere are transactions another writer committed. A rollback of the unit of work
 	// under test must not take them away: they were never part of it.
 	committedElsewhere []entities.WagerTransactionSnapshot
@@ -50,6 +53,7 @@ func newMemory() *memory {
 		wallets:      map[uuid.UUID]entities.WalletSnapshot{},
 		transactions: map[uuid.UUID]entities.WagerTransactionSnapshot{},
 		inbox:        map[string]entities.InboxMessageSnapshot{},
+		clock:        fixedNow,
 	}
 }
 
@@ -134,7 +138,41 @@ func (s wageringStore) Insert(_ context.Context, t *entities.WagerTransaction) e
 	s.m.transactions[t.ID()] = t.Snapshot()
 	return nil
 }
-func (s wageringStore) Update(context.Context, *entities.WagerTransaction) error { return nil }
+func (s wageringStore) Update(_ context.Context, t *entities.WagerTransaction) error {
+	stored, ok := s.m.transactions[t.ID()]
+	if !ok || entities.TransactionStatus(stored.Status).IsTerminal() {
+		return wageringiface.ErrStale
+	}
+	s.m.transactions[t.ID()] = t.Snapshot()
+	return nil
+}
+func (s wageringStore) FindReversalOf(_ context.Context, providerID, reference string) (*entities.WagerTransaction, error) {
+	for _, stored := range s.m.transactions {
+		if stored.ProviderID != nil && *stored.ProviderID == providerID &&
+			stored.ReferenceExternalTransactionID != nil && *stored.ReferenceExternalTransactionID == reference &&
+			stored.Status == "PROCESSED" && (stored.Kind == "REFUND" || stored.Kind == "ROLLBACK") {
+			return entities.RehydrateWagerTransaction(stored)
+		}
+	}
+	return nil, wageringiface.ErrNotFound
+}
+func (s wageringStore) ClaimDueReference(_ context.Context, now time.Time) (*entities.WagerTransaction, error) {
+	var chosen *entities.WagerTransactionSnapshot
+	for _, stored := range s.m.transactions {
+		if stored.Status != "PENDING_REFERENCE" || stored.ReferenceNextAttemptAt == nil || stored.ReferenceNextAttemptAt.After(now) {
+			continue
+		}
+		candidate := stored
+		if chosen == nil || candidate.ReferenceNextAttemptAt.Before(*chosen.ReferenceNextAttemptAt) ||
+			(candidate.ReferenceNextAttemptAt.Equal(*chosen.ReferenceNextAttemptAt) && candidate.ID.String() < chosen.ID.String()) {
+			chosen = &candidate
+		}
+	}
+	if chosen == nil {
+		return nil, wageringiface.ErrNotFound
+	}
+	return entities.RehydrateWagerTransaction(*chosen)
+}
 func (s wageringStore) Get(context.Context, uuid.UUID) (*entities.WagerTransaction, error) {
 	return nil, wageringiface.ErrNotFound
 }
@@ -196,6 +234,16 @@ func (s outboxStore) Release(context.Context, *entities.OutboxEvent, string) err
 	return nil
 }
 
+// testReference is the pending reference policy the tests run under.
+var testReference = config.Reference{
+	TTL:          time.Hour,
+	MaxAttempts:  3,
+	BackoffBase:  time.Second,
+	BackoffMax:   8 * time.Second,
+	PollInterval: time.Second,
+	BatchSize:    10,
+}
+
 var fixedNow = time.Date(2026, time.September, 8, 12, 0, 0, 0, time.UTC)
 
 func newTestService(m *memory) *service {
@@ -206,8 +254,10 @@ func newTestService(m *memory) *service {
 		wagering: wageringStore{m},
 		outbox:   outboxStore{m},
 		inbox:    inboxStore{m},
+		cfg:      testReference,
 		obs:      observability.NewNop(),
-		now:      func() time.Time { return fixedNow },
+		now:      func() time.Time { return m.clock },
+		jitter:   func(d time.Duration) time.Duration { return d },
 		newID: func() uuid.UUID {
 			next++
 			return uuid.MustParse(fmt.Sprintf("00000000-0000-7000-8000-%012d", next))
@@ -699,23 +749,6 @@ func TestAnOperationThatIsNotWellFormedStoresNothingAndOpensNoUnitOfWork(t *test
 	}
 }
 
-func TestReversalsAreNotSupportedYetAndStoreNothing(t *testing.T) {
-	for _, kind := range []string{"REFUND", "ROLLBACK"} {
-		f := newFixture(t, "100.00")
-
-		_, err := f.svc.Submit(context.Background(), f.op(t, func(op *entities.ExternalOperation) {
-			op.Kind, op.ReferenceExternalTransactionID = kind, "bet-1"
-		}))
-
-		if !errors.Is(err, wageringiface.ErrKindNotSupported) {
-			t.Errorf("%s: error = %v, want ErrKindNotSupported", kind, err)
-		}
-		if len(f.m.transactions) != 0 {
-			t.Errorf("%s stored a transaction", kind)
-		}
-	}
-}
-
 func TestAStorageFailureRollsBackAndIsReportedAsUnavailable(t *testing.T) {
 	f := newFixture(t, "100.00")
 	f.m.failWalletLock = persistenceiface.ErrUnavailable
@@ -766,7 +799,7 @@ func TestAnEventGetsACorrelationIdEvenWhenTheCallerSetNone(t *testing.T) {
 
 func TestTheServiceBuiltForProductionUsesTheRealClockAndIds(t *testing.T) {
 	m := newMemory()
-	built, ok := NewService(unitOfWork{m}, walletStore{m}, wageringStore{m}, outboxStore{m}, inboxStore{m}, observability.NewNop()).(*service)
+	built, ok := NewService(unitOfWork{m}, walletStore{m}, wageringStore{m}, outboxStore{m}, inboxStore{m}, testReference, observability.NewNop()).(*service)
 	if !ok {
 		t.Fatal("NewService must build the service")
 	}

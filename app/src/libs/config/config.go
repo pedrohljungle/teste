@@ -21,6 +21,7 @@ var Module = fx.Module("config",
 		func(c Config) AWS { return c.AWS },
 		func(c Config) Events { return c.Events },
 		func(c Config) Outbox { return c.Outbox },
+		func(c Config) Reference { return c.Reference },
 	),
 )
 
@@ -41,6 +42,7 @@ type Config struct {
 	AWS              AWS
 	Events           Events
 	Outbox           Outbox
+	Reference        Reference
 	// DocsEnabled registers the API documentation and the OpenAPI document. It is off by
 	// default: the documentation describes every route and the shape of every payload, which
 	// is a map nobody needs handed to them in production.
@@ -158,6 +160,24 @@ type Outbox struct {
 	BackoffMax  time.Duration
 }
 
+// Reference holds the policy for a reversal whose reference has not arrived: how long it waits, how
+// often it looks again, and how often the job that resolves them runs.
+type Reference struct {
+	// TTL is how long a reversal waits for its reference before it is rejected. The wait ends at
+	// the TTL or at MaxAttempts, whichever comes first.
+	TTL time.Duration
+	// MaxAttempts is how many times a waiting reversal looks for its reference again.
+	MaxAttempts int
+	// BackoffBase and BackoffMax bound the wait between two looks: BackoffBase doubled on every
+	// attempt, up to BackoffMax. The state is stored on the transaction, so it survives a restart.
+	BackoffBase time.Duration
+	BackoffMax  time.Duration
+	// PollInterval is how often the job looks for reversals whose next look is due, when the last
+	// look found none. BatchSize is how many it resolves in one tick.
+	PollInterval time.Duration
+	BatchSize    int
+}
+
 // AWS holds the SDK settings. Endpoint is only set outside AWS, to point the SDK at a local
 // emulator; empty means the real service.
 type AWS struct {
@@ -199,6 +219,12 @@ func Load() (Config, error) {
 	v.SetDefault("OUTBOX_LEASE", "60s")
 	v.SetDefault("OUTBOX_BACKOFF_BASE", "1s")
 	v.SetDefault("OUTBOX_BACKOFF_MAX", "5m")
+	v.SetDefault("REFERENCE_TTL", "24h")
+	v.SetDefault("REFERENCE_MAX_ATTEMPTS", 12)
+	v.SetDefault("REFERENCE_BACKOFF_BASE", "1s")
+	v.SetDefault("REFERENCE_BACKOFF_MAX", "5m")
+	v.SetDefault("REFERENCE_POLL_INTERVAL", "1s")
+	v.SetDefault("REFERENCE_BATCH_SIZE", 25)
 
 	cfg := Config{
 		Env:              v.GetString("APP_ENV"),
@@ -227,6 +253,14 @@ func Load() (Config, error) {
 			Lease:        v.GetDuration("OUTBOX_LEASE"),
 			BackoffBase:  v.GetDuration("OUTBOX_BACKOFF_BASE"),
 			BackoffMax:   v.GetDuration("OUTBOX_BACKOFF_MAX"),
+		},
+		Reference: Reference{
+			TTL:          v.GetDuration("REFERENCE_TTL"),
+			MaxAttempts:  v.GetInt("REFERENCE_MAX_ATTEMPTS"),
+			BackoffBase:  v.GetDuration("REFERENCE_BACKOFF_BASE"),
+			BackoffMax:   v.GetDuration("REFERENCE_BACKOFF_MAX"),
+			PollInterval: v.GetDuration("REFERENCE_POLL_INTERVAL"),
+			BatchSize:    v.GetInt("REFERENCE_BATCH_SIZE"),
 		},
 		DocsEnabled: v.GetBool("DOCS_ENABLED"),
 		AWS: AWS{
@@ -266,7 +300,10 @@ func (c Config) validate() error {
 	if c.Events.QueueURL == "" {
 		return errors.New("SQS_EVENTS_QUEUE_URL is required")
 	}
-	return c.Outbox.validate()
+	if err := c.Outbox.validate(); err != nil {
+		return err
+	}
+	return c.Reference.validate()
 }
 
 func (o Outbox) validate() error {
@@ -279,6 +316,22 @@ func (o Outbox) validate() error {
 		return errors.New("OUTBOX_LEASE must be positive")
 	case o.BackoffBase <= 0 || o.BackoffMax < o.BackoffBase:
 		return errors.New("OUTBOX_BACKOFF_BASE must be positive and OUTBOX_BACKOFF_MAX at least as long")
+	}
+	return nil
+}
+
+func (r Reference) validate() error {
+	switch {
+	case r.TTL <= 0:
+		return errors.New("REFERENCE_TTL must be positive")
+	case r.MaxAttempts < 1:
+		return errors.New("REFERENCE_MAX_ATTEMPTS must be at least 1")
+	case r.BackoffBase <= 0 || r.BackoffMax < r.BackoffBase:
+		return errors.New("REFERENCE_BACKOFF_BASE must be positive and REFERENCE_BACKOFF_MAX at least as long")
+	case r.PollInterval <= 0:
+		return errors.New("REFERENCE_POLL_INTERVAL must be positive")
+	case r.BatchSize < 1:
+		return errors.New("REFERENCE_BATCH_SIZE must be at least 1")
 	}
 	return nil
 }

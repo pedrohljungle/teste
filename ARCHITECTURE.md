@@ -273,23 +273,46 @@ de retomada (`idx_wager_pending`), que cobre a interrupção entre o registro e 
 ### 2.4 Referências e reversões
 
 `REFUND` e `ROLLBACK` resolvem a referência por `(providerId, referenceExternalTransactionId)`.
-Os cinco desfechos:
+O que cada um pode desfazer: `REFUND` só desfaz uma `BET`; `ROLLBACK` desfaz `BET`, `WIN` ou
+`REFUND`. Os desfechos:
 
 | Situação da referência | Desfecho |
 |---|---|
 | `PROCESSED` e compatível | aplica a reversão |
 | não existe ainda | `PENDING_REFERENCE`, evento `WagerTransactionPendingReference` |
 | ainda `PENDING`/`PENDING_REFERENCE` | `PENDING_REFERENCE` — mesma fila de retry |
-| `REJECTED`/`FAILED` | `REJECTED` com `REFERENCE_NOT_PROCESSED` |
-| divergente em provedor/jogador/carteira/moeda/rodada | `REJECTED` com `REFERENCE_MISMATCH` |
+| `REJECTED`/`FAILED` | `REJECTED` com `REFERENCE_NOT_PROCESSED`, **na hora**: não se espera por uma referência que nunca terá sucesso |
+| divergente em provedor/jogador/carteira/moeda/rodada, ou de um tipo que a reversão não desfaz | `REJECTED` com `REFERENCE_MISMATCH` |
+| valor diferente do referenciado | `REJECTED` com `AMOUNT_MISMATCH` (reversão parcial está fora do desafio) |
+| já reversada com sucesso | `REJECTED` com `REFERENCE_ALREADY_REVERSED` |
 
-**Retry:** backoff exponencial com jitter, gravado em `reference_next_attempt_at` — no banco,
-não em memória, e por isso sobrevive a reinício. Teto de **8 tentativas** ou **24h**
-(`reference_expires_at`), o que vier primeiro. Esgotado, vira `REJECTED` com
-`REFERENCE_NOT_FOUND` e emite `WagerTransactionRejected`.
+As verificações do que já se sabe (tipo, provedor, jogador, carteira, moeda, rodada, valor) vêm
+**antes** do estado da referência: uma reversão que discorda da sua referência é recusada mesmo
+que a referência ainda esteja pendente.
+
+**Onde a espera mora.** No próprio registro da transação: `reference_attempts`,
+`reference_next_attempt_at` e `reference_expires_at`. Nada vive em memória, então qualquer instância
+assume a espera exatamente de onde ela parou, inclusive depois de um reinício.
+
+**O job de resolução** (`libs/cronjob`, em toda instância do worker) reivindica **uma reversão por
+vez, uma unidade de trabalho cada**, com `FOR UPDATE SKIP LOCKED` na linha da transação. O lock é da
+transação: não há lease a expirar, porque um worker que morre o solta morrendo. Dentro da unidade
+de trabalho ele trava a carteira **antes** de ler a referência, como todo caminho de escrita, então
+uma referência sendo processada na mesma carteira ou está inteira ali ou não está. Não há
+inversão de lock com o caminho HTTP: o HTTP trava a carteira e insere uma linha nova, o job trava a
+linha existente e depois a carteira.
+
+**Quando a espera acaba.** Por `REFERENCE_TTL` (padrão 24 h) ou `REFERENCE_MAX_ATTEMPTS`
+(padrão 12 novas tentativas), o que vier primeiro. Backoff exponencial de `REFERENCE_BACKOFF_BASE`
+até `REFERENCE_BACKOFF_MAX`, com espalhamento de ±20%. Esgotada, a reversão vira `REJECTED` e emite
+`WagerTransactionRejected`, e **o código diz o porquê**: `REFERENCE_NOT_FOUND` quando a referência
+nunca chegou, `REFERENCE_NOT_PROCESSED` quando chegou e continua sem terminar.
+
+**Cadeias.** Um `ROLLBACK` de um `REFUND` que ainda espera pela sua `BET` também espera. Chegando a
+`BET`, o job resolve o `REFUND` e, no tick seguinte, o `ROLLBACK`.
 
 **A mensagem de entrada é concluída assim que a pendência está persistida** (SPEC §6.5): o
-worker de referência assume a continuidade, e segurar a mensagem na fila só faria a DLQ comer
+job de resolução assume a continuidade, e segurar a mensagem na fila só faria a DLQ comer
 uma operação que está progredindo.
 
 **`REFUND` e `ROLLBACK` sobre a mesma aposta.** Decisão: **uma aposta recebe no máximo uma
@@ -298,6 +321,7 @@ reversão bem-sucedida, de qualquer tipo.** A segunda é rejeitada com
 regra mais forte elimina a devolução dupla do mesmo débito sem depender de ordem de chegada — e
 `uk_wager_single_reversal` a impõe no banco. Reverter uma reversão continua possível pelo
 caminho legítimo: `ROLLBACK` apontando para o `REFUND`, que é outra referência.
+
 ### 2.5 Códigos de falha
 
 Estáveis, documentados, e distinguindo entrada corrigível de resultado definitivo (SPEC §7).

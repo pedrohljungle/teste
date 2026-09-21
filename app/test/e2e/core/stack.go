@@ -143,6 +143,13 @@ func boot(ctx context.Context, in *infra) (*Stack, error) {
 		"OUTBOX_LEASE":         "3s",
 		"OUTBOX_BACKOFF_BASE":  "400ms",
 		"OUTBOX_BACKOFF_MAX":   "2s",
+		// A pending reference is looked for again quickly, and gives up after a few seconds, so a
+		// scenario about a reversal that arrives early or never waits seconds and not a day.
+		"REFERENCE_POLL_INTERVAL": "200ms",
+		"REFERENCE_BACKOFF_BASE":  "300ms",
+		"REFERENCE_BACKOFF_MAX":   "1s",
+		"REFERENCE_TTL":           "5s",
+		"REFERENCE_MAX_ATTEMPTS":  "200",
 		// Telemetry off: the suite asserts on behaviour, and an unreachable collector would
 		// only add noise and startup time.
 		"OTEL_EXPORTER_OTLP_ENDPOINT": "",
@@ -177,7 +184,7 @@ func boot(ctx context.Context, in *infra) (*Stack, error) {
 		fx.Populate(&repos.UnitOfWork, &repos.Wallets, &repos.Wagering, &repos.Outbox),
 
 		fx.Invoke(prepareWorkers),
-		fx.Invoke(registerOutboxCronjob),
+		fx.Invoke(registerCronjobs),
 		fx.Invoke(jobrunner.Run),
 		fx.Invoke(cronjob.Run),
 

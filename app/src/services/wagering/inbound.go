@@ -38,9 +38,6 @@ func (s *service) Receive(ctx context.Context, message structs.WagerMessage) (ou
 		if err != nil {
 			return structs.WagerOutcome{}, err
 		}
-		if candidate.Kind().IsReversal() {
-			return structs.WagerOutcome{}, wageringiface.ErrKindNotSupported
-		}
 		record, err := entities.NewInboxMessage(consumerName, message.ID, message.Hash, s.now())
 		if err != nil {
 			return structs.WagerOutcome{}, fmt.Errorf("%w: %w", entities.ErrInvalidTransaction, err)

@@ -4,7 +4,11 @@ package wagering
 
 import "go.uber.org/fx"
 
-// Module provides the service behind the contract in interfaces/wagering.
+// Module provides the service and the resolver of pending references behind the contracts in
+// interfaces/wagering.
 var Module = fx.Module("services.wagering",
-	fx.Provide(NewService),
+	fx.Provide(
+		NewService,
+		NewReferenceResolver,
+	),
 )

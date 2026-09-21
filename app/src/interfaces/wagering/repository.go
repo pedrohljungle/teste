@@ -4,6 +4,7 @@ package wagering
 
 import (
 	"context"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -32,4 +33,16 @@ type Repository interface {
 	// FindByKey reads a provider's transaction by the idempotency key it arrived with. It fails
 	// with ErrNotFound.
 	FindByKey(ctx context.Context, providerID, idempotencyKey string) (*entities.WagerTransaction, error)
+
+	// FindReversalOf reads the reversal, a REFUND or a ROLLBACK, that already succeeded against the
+	// transaction the provider knows by that external id. It fails with ErrNotFound when the
+	// transaction has not been reversed. A transaction is reversed at most once, and the database
+	// enforces it; this is what lets the rule name the failure instead of surfacing a violation.
+	FindReversalOf(ctx context.Context, providerID, referenceExternalTransactionID string) (*entities.WagerTransaction, error)
+
+	// ClaimDueReference reads one reversal that is waiting for its reference and whose next look is
+	// due, and locks its row until the transaction ends. Several workers may ask at once and each one
+	// gets a different reversal: a row another worker holds is skipped, not waited for. It fails with
+	// ErrNotFound when none is due, and with persistence.ErrNoTransaction outside of a unit of work.
+	ClaimDueReference(ctx context.Context, now time.Time) (*entities.WagerTransaction, error)
 }

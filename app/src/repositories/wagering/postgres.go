@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -148,6 +149,30 @@ func (r *postgresRepository) FindByKey(ctx context.Context, providerID, idempote
 
 	return r.one(ctx, selectTransaction+"WHERE provider_id = $1 AND idempotency_key = $2 AND origin = 'EXTERNAL'",
 		providerID, idempotencyKey)
+}
+
+func (r *postgresRepository) FindReversalOf(ctx context.Context, providerID, referenceExternalTransactionID string) (transaction *entities.WagerTransaction, err error) {
+	ctx, end := r.obs.Start(ctx, observability.LayerRepository, "wagering.Repository.FindReversalOf")
+	defer func() { end(expected(err)) }()
+
+	return r.one(ctx, selectTransaction+`WHERE provider_id = $1 AND reference_external_transaction_id = $2
+		AND status = 'PROCESSED' AND kind IN ('REFUND', 'ROLLBACK')`,
+		providerID, referenceExternalTransactionID)
+}
+
+// ClaimDueReference picks the reversal with SKIP LOCKED for the same reason the outbox does: any
+// number of workers can ask at once and none waits for another. The lock is the transaction's, so
+// unlike the outbox there is no lease to expire: a worker that dies releases it by dying, and the
+// reversal is due again for the next one.
+func (r *postgresRepository) ClaimDueReference(ctx context.Context, now time.Time) (transaction *entities.WagerTransaction, err error) {
+	ctx, end := r.obs.Start(ctx, observability.LayerRepository, "wagering.Repository.ClaimDueReference")
+	defer func() { end(expected(err)) }()
+
+	if err := r.db.RequireTransaction(ctx); err != nil {
+		return nil, err
+	}
+	return r.one(ctx, selectTransaction+`WHERE status = 'PENDING_REFERENCE' AND reference_next_attempt_at <= $1
+		ORDER BY reference_next_attempt_at FOR UPDATE SKIP LOCKED LIMIT 1`, now)
 }
 
 func (r *postgresRepository) one(ctx context.Context, query string, args ...any) (*entities.WagerTransaction, error) {

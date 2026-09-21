@@ -14,11 +14,15 @@ import (
 	persistenceiface "github.com/estrategiahq/pedro-test/app/src/interfaces/persistence"
 	wageringiface "github.com/estrategiahq/pedro-test/app/src/interfaces/wagering"
 	walletiface "github.com/estrategiahq/pedro-test/app/src/interfaces/wallet"
+	"github.com/estrategiahq/pedro-test/app/src/libs/config"
 	"github.com/estrategiahq/pedro-test/app/src/libs/observability"
 	"github.com/estrategiahq/pedro-test/app/src/structs"
 )
 
-var _ wageringiface.Service = (*service)(nil)
+var (
+	_ wageringiface.Service           = (*service)(nil)
+	_ wageringiface.ReferenceResolver = (*service)(nil)
+)
 
 type service struct {
 	uow      persistenceiface.UnitOfWork
@@ -26,11 +30,14 @@ type service struct {
 	wagering wageringiface.Repository
 	outbox   outboxiface.Repository
 	inbox    inboxiface.Repository
+	cfg      config.Reference
 	obs      *observability.Observer
 
-	// now and newID are fields so a test can fix the clock and the identities.
-	now   func() time.Time
-	newID func() uuid.UUID
+	// now, newID and jitter are fields so a test can fix the clock, the identities and the spread
+	// of a retry.
+	now    func() time.Time
+	newID  func() uuid.UUID
+	jitter func(time.Duration) time.Duration
 }
 
 // NewService builds the wagering service.
@@ -40,17 +47,47 @@ func NewService(
 	wagering wageringiface.Repository,
 	outbox outboxiface.Repository,
 	inbox inboxiface.Repository,
+	cfg config.Reference,
 	obs *observability.Observer,
 ) wageringiface.Service {
+	return newService(uow, wallets, wagering, outbox, inbox, cfg, obs)
+}
+
+// NewReferenceResolver builds the resolver of pending references. It is the same rules as the
+// service, reached by a periodic job instead of a request, and shares its code and not its state:
+// the service holds none.
+func NewReferenceResolver(
+	uow persistenceiface.UnitOfWork,
+	wallets walletiface.Repository,
+	wagering wageringiface.Repository,
+	outbox outboxiface.Repository,
+	inbox inboxiface.Repository,
+	cfg config.Reference,
+	obs *observability.Observer,
+) wageringiface.ReferenceResolver {
+	return newService(uow, wallets, wagering, outbox, inbox, cfg, obs)
+}
+
+func newService(
+	uow persistenceiface.UnitOfWork,
+	wallets walletiface.Repository,
+	wagering wageringiface.Repository,
+	outbox outboxiface.Repository,
+	inbox inboxiface.Repository,
+	cfg config.Reference,
+	obs *observability.Observer,
+) *service {
 	return &service{
 		uow:      uow,
 		wallets:  wallets,
 		wagering: wagering,
 		outbox:   outbox,
 		inbox:    inbox,
+		cfg:      cfg,
 		obs:      obs,
 		now:      time.Now,
 		newID:    func() uuid.UUID { return uuid.Must(uuid.NewV7()) },
+		jitter:   spread,
 	}
 }
 
@@ -70,9 +107,6 @@ func (s *service) Submit(ctx context.Context, operation entities.ExternalOperati
 	candidate, err := entities.NewExternalTransaction(s.newID(), operation, s.now())
 	if err != nil {
 		return structs.WagerOutcome{}, err
-	}
-	if candidate.Kind().IsReversal() {
-		return structs.WagerOutcome{}, wageringiface.ErrKindNotSupported
 	}
 
 	if existing, found, err := s.lookup(ctx, candidate); err != nil {
@@ -159,12 +193,18 @@ func (s *service) applyOperation(ctx context.Context, candidate *entities.WagerT
 	if err != nil {
 		return err
 	}
-
-	decision, err := s.decide(wallet, candidate, correlationID, s.now())
+	// What a reversal refers to is read after the lock, so it is the state the decision is made on
+	// and not one another writer is about to change.
+	resolution, err := s.resolve(ctx, candidate)
 	if err != nil {
 		return err
 	}
-	return s.store(ctx, wallet, candidate, decision)
+
+	decision, err := s.decide(wallet, candidate, resolution, correlationID, s.now())
+	if err != nil {
+		return err
+	}
+	return s.store(ctx, wallet, candidate, decision, insert)
 }
 
 // correlationID is the one the request or message carries, or a fresh one for a caller that set

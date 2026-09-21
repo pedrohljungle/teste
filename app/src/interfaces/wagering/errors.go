@@ -18,8 +18,6 @@ var (
 	// ErrMessageConflict is a message that reuses the id of one already handled but carries other
 	// content. It is refused whole: nothing of it is applied.
 	ErrMessageConflict = errors.New("the message id was already handled with other content")
-	// ErrKindNotSupported is an operation of a kind the system does not process yet.
-	ErrKindNotSupported = errors.New("this kind of operation is not supported yet")
 	// ErrStale is an update of a transaction that is gone or already settled.
 	ErrStale = errors.New("transaction is not in a state that can change")
 )

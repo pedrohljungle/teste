@@ -69,7 +69,7 @@ type messageBody struct {
 //
 // Three outcomes, and only the last one is a retry:
 //   - the operation was applied, replayed or rejected by a business rule: done, delete;
-//   - no retry can change the result (malformed, contradicting, unsupported): send it to the dead
+//   - no retry can change the result (malformed, contradicting): send it to the dead
 //     letter queue with the reason, then delete it from this one;
 //   - the storage was unavailable: return the error, and the queue delivers it again.
 func (h *JobHandler) Handle(ctx context.Context, msg structs.QueueMessage) (err error) {
@@ -121,8 +121,7 @@ func isPermanent(err error) bool {
 	return errors.Is(err, errMalformed) ||
 		errors.Is(err, entities.ErrInvalidTransaction) ||
 		errors.Is(err, wageringiface.ErrIdempotencyConflict) ||
-		errors.Is(err, wageringiface.ErrMessageConflict) ||
-		errors.Is(err, wageringiface.ErrKindNotSupported)
+		errors.Is(err, wageringiface.ErrMessageConflict)
 }
 
 // parse reads the body of a message. The hash covers the exact bytes that arrived, so a

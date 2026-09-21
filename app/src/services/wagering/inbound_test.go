@@ -267,15 +267,3 @@ func TestAMessageWithoutAnIdOrAHashIsInvalid(t *testing.T) {
 		t.Fatal("a unit of work was opened for a message that cannot be recorded")
 	}
 }
-
-func TestReversalsOverTheQueueAreNotSupportedYet(t *testing.T) {
-	f := newFixture(t, "100.00")
-
-	_, err := f.svc.Receive(context.Background(), f.message(t, "msg-1", "body", func(op *entities.ExternalOperation) {
-		op.Kind, op.ReferenceExternalTransactionID = "REFUND", "bet-1"
-	}))
-
-	if !errors.Is(err, wageringiface.ErrKindNotSupported) {
-		t.Fatalf("error = %v, want ErrKindNotSupported", err)
-	}
-}

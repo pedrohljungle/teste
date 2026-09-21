@@ -109,6 +109,12 @@ func (s wageringStore) Insert(_ context.Context, t *entities.WagerTransaction) e
 	return nil
 }
 func (s wageringStore) Update(context.Context, *entities.WagerTransaction) error { return nil }
+func (s wageringStore) FindReversalOf(context.Context, string, string) (*entities.WagerTransaction, error) {
+	return nil, errors.New("not used by this service")
+}
+func (s wageringStore) ClaimDueReference(context.Context, time.Time) (*entities.WagerTransaction, error) {
+	return nil, errors.New("not used by this service")
+}
 func (s wageringStore) Get(context.Context, uuid.UUID) (*entities.WagerTransaction, error) {
 	return nil, errors.New("not used by this service")
 }

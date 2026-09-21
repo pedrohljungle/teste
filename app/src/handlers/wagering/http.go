@@ -76,7 +76,6 @@ type TransactionResponse struct {
 //	@Failure		403				{object}	structs.APIError
 //	@Failure		409				{object}	structs.APIError
 //	@Failure		422				{object}	TransactionResponse
-//	@Failure		501				{object}	structs.APIError
 //	@Failure		503				{object}	structs.APIError
 //	@Security		OAuth2Password
 //	@Router			/wagering/transactions [post]
@@ -187,7 +186,6 @@ var failures = []struct {
 }{
 	{entities.ErrOpeningNotAllowed, http.StatusBadRequest, "OPENING is reserved to the internal wallet opening", string(entities.FailureOpeningNotAllowed)},
 	{wageringiface.ErrIdempotencyConflict, http.StatusConflict, "the idempotency key or the provider transaction id was already used with other content", ""},
-	{wageringiface.ErrKindNotSupported, http.StatusNotImplemented, "this kind of operation is not supported yet", ""},
 	{persistenceiface.ErrUnavailable, http.StatusServiceUnavailable, "storage is temporarily unavailable, try again", ""},
 }
 
