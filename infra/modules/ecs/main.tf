@@ -108,6 +108,14 @@ data "aws_iam_policy_document" "publish" {
   }
 }
 
+# The worker also sends to the dead letter queue what no retry can fix.
+data "aws_iam_policy_document" "dead_letter" {
+  statement {
+    actions   = ["sqs:SendMessage", "sqs:GetQueueAttributes", "sqs:GetQueueUrl"]
+    resources = [var.dlq_arn]
+  }
+}
+
 # Only the worker publishes integration events: the outbox publisher runs there.
 data "aws_iam_policy_document" "publish_events" {
   statement {
@@ -133,6 +141,12 @@ resource "aws_iam_role_policy" "server_publish" {
   name   = "${var.name}-server-publish"
   role   = aws_iam_role.server.id
   policy = data.aws_iam_policy_document.publish.json
+}
+
+resource "aws_iam_role_policy" "worker_dead_letter" {
+  name   = "${var.name}-worker-dead-letter"
+  role   = aws_iam_role.worker.id
+  policy = data.aws_iam_policy_document.dead_letter.json
 }
 
 resource "aws_iam_role_policy" "worker_publish_events" {
@@ -161,6 +175,7 @@ locals {
     { name = "KEYCLOAK_AUDIENCE", value = var.keycloak_audience },
     { name = "AWS_REGION", value = var.region },
     { name = "SQS_QUEUE_URL", value = var.queue_url },
+    { name = "SQS_DLQ_URL", value = var.dlq_url },
     { name = "SQS_EVENTS_QUEUE_URL", value = var.events_queue_url },
     { name = "OTEL_EXPORTER_OTLP_ENDPOINT", value = var.otlp_endpoint },
     { name = "OTEL_TRACES_SAMPLER_ARG", value = tostring(var.trace_sample_ratio) },

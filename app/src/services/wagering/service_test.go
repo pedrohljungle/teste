@@ -11,6 +11,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/estrategiahq/pedro-test/app/src/entities"
+	inboxiface "github.com/estrategiahq/pedro-test/app/src/interfaces/inbox"
 	persistenceiface "github.com/estrategiahq/pedro-test/app/src/interfaces/persistence"
 	wageringiface "github.com/estrategiahq/pedro-test/app/src/interfaces/wagering"
 	walletiface "github.com/estrategiahq/pedro-test/app/src/interfaces/wallet"
@@ -25,6 +26,7 @@ type memory struct {
 	transactions map[uuid.UUID]entities.WagerTransactionSnapshot
 	entries      []entities.LedgerEntrySnapshot
 	events       []entities.OutboxEventSnapshot
+	inbox        map[string]entities.InboxMessageSnapshot
 
 	atomicCalls int
 	// beforeInsert runs as a transaction is about to be inserted, to play the other copy of the
@@ -47,6 +49,7 @@ func newMemory() *memory {
 	return &memory{
 		wallets:      map[uuid.UUID]entities.WalletSnapshot{},
 		transactions: map[uuid.UUID]entities.WagerTransactionSnapshot{},
+		inbox:        map[string]entities.InboxMessageSnapshot{},
 	}
 }
 
@@ -56,6 +59,10 @@ func (m *memory) state() memory {
 		transactions: map[uuid.UUID]entities.WagerTransactionSnapshot{},
 		entries:      append([]entities.LedgerEntrySnapshot(nil), m.entries...),
 		events:       append([]entities.OutboxEventSnapshot(nil), m.events...),
+		inbox:        map[string]entities.InboxMessageSnapshot{},
+	}
+	for key, message := range m.inbox {
+		saved.inbox[key] = message
 	}
 	for id, w := range m.wallets {
 		saved.wallets[id] = w
@@ -67,7 +74,7 @@ func (m *memory) state() memory {
 }
 
 func (m *memory) restore(saved memory) {
-	m.wallets, m.transactions, m.entries, m.events = saved.wallets, saved.transactions, saved.entries, saved.events
+	m.wallets, m.transactions, m.entries, m.events, m.inbox = saved.wallets, saved.transactions, saved.entries, saved.events, saved.inbox
 	for _, other := range m.committedElsewhere {
 		m.transactions[other.ID] = other
 	}
@@ -148,6 +155,32 @@ func (s wageringStore) FindByKey(_ context.Context, providerID, key string) (*en
 	return nil, wageringiface.ErrNotFound
 }
 
+type inboxStore struct{ m *memory }
+
+func inboxKey(consumer, id string) string { return consumer + "|" + id }
+
+func (s inboxStore) Insert(_ context.Context, message *entities.InboxMessage) (bool, error) {
+	key := inboxKey(message.ConsumerName(), message.MessageID())
+	if _, exists := s.m.inbox[key]; exists {
+		return false, nil
+	}
+	s.m.inbox[key] = message.Snapshot()
+	return true, nil
+}
+
+func (s inboxStore) Complete(_ context.Context, message *entities.InboxMessage) error {
+	s.m.inbox[inboxKey(message.ConsumerName(), message.MessageID())] = message.Snapshot()
+	return nil
+}
+
+func (s inboxStore) Find(_ context.Context, consumer, id string) (*entities.InboxMessage, error) {
+	stored, ok := s.m.inbox[inboxKey(consumer, id)]
+	if !ok {
+		return nil, inboxiface.ErrNotFound
+	}
+	return entities.RehydrateInboxMessage(stored)
+}
+
 type outboxStore struct{ m *memory }
 
 func (s outboxStore) Insert(_ context.Context, e *entities.OutboxEvent) error {
@@ -172,6 +205,7 @@ func newTestService(m *memory) *service {
 		wallets:  walletStore{m},
 		wagering: wageringStore{m},
 		outbox:   outboxStore{m},
+		inbox:    inboxStore{m},
 		obs:      observability.NewNop(),
 		now:      func() time.Time { return fixedNow },
 		newID: func() uuid.UUID {
@@ -732,7 +766,7 @@ func TestAnEventGetsACorrelationIdEvenWhenTheCallerSetNone(t *testing.T) {
 
 func TestTheServiceBuiltForProductionUsesTheRealClockAndIds(t *testing.T) {
 	m := newMemory()
-	built, ok := NewService(unitOfWork{m}, walletStore{m}, wageringStore{m}, outboxStore{m}, observability.NewNop()).(*service)
+	built, ok := NewService(unitOfWork{m}, walletStore{m}, wageringStore{m}, outboxStore{m}, inboxStore{m}, observability.NewNop()).(*service)
 	if !ok {
 		t.Fatal("NewService must build the service")
 	}

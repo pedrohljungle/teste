@@ -9,6 +9,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/estrategiahq/pedro-test/app/src/entities"
+	inboxiface "github.com/estrategiahq/pedro-test/app/src/interfaces/inbox"
 	outboxiface "github.com/estrategiahq/pedro-test/app/src/interfaces/outbox"
 	persistenceiface "github.com/estrategiahq/pedro-test/app/src/interfaces/persistence"
 	wageringiface "github.com/estrategiahq/pedro-test/app/src/interfaces/wagering"
@@ -24,6 +25,7 @@ type service struct {
 	wallets  walletiface.Repository
 	wagering wageringiface.Repository
 	outbox   outboxiface.Repository
+	inbox    inboxiface.Repository
 	obs      *observability.Observer
 
 	// now and newID are fields so a test can fix the clock and the identities.
@@ -37,6 +39,7 @@ func NewService(
 	wallets walletiface.Repository,
 	wagering wageringiface.Repository,
 	outbox outboxiface.Repository,
+	inbox inboxiface.Repository,
 	obs *observability.Observer,
 ) wageringiface.Service {
 	return &service{
@@ -44,6 +47,7 @@ func NewService(
 		wallets:  wallets,
 		wagering: wagering,
 		outbox:   outbox,
+		inbox:    inbox,
 		obs:      obs,
 		now:      time.Now,
 		newID:    func() uuid.UUID { return uuid.Must(uuid.NewV7()) },
@@ -130,33 +134,37 @@ func (s *service) replay(existing, candidate *entities.WagerTransaction) (struct
 	return structs.WagerOutcome{Transaction: existing, Replay: true}, nil
 }
 
-// apply is the write path: one unit of work that locks the wallet, decides what the operation
-// does to it and stores everything that follows from that decision. It returns the transaction
-// as stored.
+// apply is the write path of an operation that arrived over HTTP: one unit of work that applies the
+// operation. It returns the transaction as stored.
 func (s *service) apply(ctx context.Context, candidate *entities.WagerTransaction, correlationID string) (*entities.WagerTransaction, error) {
-	walletID := candidate.WalletID()
-
 	err := s.uow.Atomic(ctx, func(ctx context.Context) error {
-		// The row lock is what serialises two writers of one wallet: the second waits here, then
-		// reads the balance the first one left. Wallets that are not this one are not touched.
-		wallet, err := s.wallets.GetForUpdate(ctx, walletID)
-		if errors.Is(err, walletiface.ErrNotFound) {
-			return entities.Reject(entities.FailureWalletNotFound, "wallet %s does not exist", walletID)
-		}
-		if err != nil {
-			return err
-		}
-
-		decision, err := s.decide(wallet, candidate, correlationID, s.now())
-		if err != nil {
-			return err
-		}
-		return s.store(ctx, wallet, candidate, decision)
+		return s.applyOperation(ctx, candidate, correlationID)
 	})
 	if err != nil {
 		return nil, err
 	}
 	return candidate, nil
+}
+
+// applyOperation locks the wallet, decides what the operation does to it and stores everything
+// that follows from that decision. It has to run inside a unit of work, and it is the body that
+// both entry points share: the queue wraps it in the inbox, HTTP does not.
+func (s *service) applyOperation(ctx context.Context, candidate *entities.WagerTransaction, correlationID string) error {
+	// The row lock is what serialises two writers of one wallet: the second waits here, then reads
+	// the balance the first one left. Wallets that are not this one are not touched.
+	wallet, err := s.wallets.GetForUpdate(ctx, candidate.WalletID())
+	if errors.Is(err, walletiface.ErrNotFound) {
+		return entities.Reject(entities.FailureWalletNotFound, "wallet %s does not exist", candidate.WalletID())
+	}
+	if err != nil {
+		return err
+	}
+
+	decision, err := s.decide(wallet, candidate, correlationID, s.now())
+	if err != nil {
+		return err
+	}
+	return s.store(ctx, wallet, candidate, decision)
 }
 
 // correlationID is the one the request or message carries, or a fresh one for a caller that set

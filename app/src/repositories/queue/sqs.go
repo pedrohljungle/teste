@@ -2,6 +2,8 @@ package queue
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"strconv"
 
@@ -15,11 +17,15 @@ import (
 )
 
 // traceAttributePrefix namespaces the trace headers among the message attributes, so they
-// never collide with an attribute a domain may want to add later.
+// never collide with an attribute a producer may want to add.
 const traceAttributePrefix = "otel-"
 
-// SQS is the job queue. It implements the publishing side used by whoever produces work and
-// the consuming side (jobrunner.Source) used by the worker runtime.
+// maxReasonLength keeps the reason inside what a message attribute comfortably carries.
+const maxReasonLength = 500
+
+// SQS is the job queue as the worker sees it: it consumes messages (jobrunner.Source) and sends
+// the ones it gave up on to the dead letter queue. Nothing in this system produces jobs: the
+// messages come from the systems that call this one.
 //
 // It carries bytes on purpose: the payload is the domain's business, and an adapter that
 // unmarshalled it would have to know every kind of message that will ever exist.
@@ -37,26 +43,45 @@ func NewSQS(client *sqs.Client, cfg config.Worker, obs *observability.Observer) 
 // Name is the queue this adapter reads from and writes to.
 func (q *SQS) Name() string { return q.cfg.Name() }
 
-// Publish sends the payload with the current trace context in the message attributes.
+// Send puts a message the consumer gave up on, unchanged, on the dead letter queue, with the
+// reason it was given up. A person finds out why from the attribute, instead of having to guess from
+// the body.
 //
-// The trace travels as attributes rather than inside the body because the body belongs to the
-// domain: a consumer written by someone else must be able to read the message without knowing
-// this application wraps it in anything.
-func (q *SQS) Publish(ctx context.Context, payload []byte) (err error) {
-	ctx, end := q.obs.Start(ctx, observability.LayerRepository, "queue.Publish",
+// The queue is FIFO, so it needs a group and a deduplication id: one group for everything, since
+// nothing reads it in order, and the hash of the payload, so the same poison message sent twice is
+// kept once.
+func (q *SQS) Send(ctx context.Context, msg structs.QueueMessage, reason string) (err error) {
+	ctx, end := q.obs.Start(ctx, observability.LayerRepository, "queue.DeadLetter",
 		observability.String("queue", q.cfg.Name()),
 	)
 	defer func() { end(err) }()
 
+	sum := sha256.Sum256(msg.Payload)
 	_, err = q.client.SendMessage(ctx, &sqs.SendMessageInput{
-		QueueUrl:          awssdk.String(q.cfg.QueueURL),
-		MessageBody:       awssdk.String(string(payload)),
-		MessageAttributes: traceAttributes(observability.InjectTrace(ctx)),
+		QueueUrl:               awssdk.String(q.cfg.DeadLetterURL),
+		MessageBody:            awssdk.String(string(msg.Payload)),
+		MessageGroupId:         awssdk.String("dead-letter"),
+		MessageDeduplicationId: awssdk.String(hex.EncodeToString(sum[:])),
+		MessageAttributes: map[string]types.MessageAttributeValue{
+			"failureReason": stringAttribute(truncate(reason, maxReasonLength)),
+			"sourceQueue":   stringAttribute(q.cfg.Name()),
+		},
 	})
 	if err != nil {
-		return fmt.Errorf("publish message: %w", err)
+		return fmt.Errorf("send to the dead letter queue: %w", err)
 	}
 	return nil
+}
+
+func stringAttribute(value string) types.MessageAttributeValue {
+	return types.MessageAttributeValue{DataType: awssdk.String("String"), StringValue: awssdk.String(value)}
+}
+
+func truncate(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	return s[:max]
 }
 
 // Consume long polls the queue.
@@ -125,20 +150,6 @@ func (q *SQS) Depth(ctx context.Context) (int64, error) {
 		return 0, fmt.Errorf("parse queue depth %q: %w", raw, err)
 	}
 	return depth, nil
-}
-
-func traceAttributes(carrier map[string]string) map[string]types.MessageAttributeValue {
-	if len(carrier) == 0 {
-		return nil
-	}
-	attributes := make(map[string]types.MessageAttributeValue, len(carrier))
-	for key, value := range carrier {
-		attributes[traceAttributePrefix+key] = types.MessageAttributeValue{
-			DataType:    awssdk.String("String"),
-			StringValue: awssdk.String(value),
-		}
-	}
-	return attributes
 }
 
 func traceContextFrom(attributes map[string]types.MessageAttributeValue) map[string]string {

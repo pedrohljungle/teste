@@ -103,8 +103,12 @@ func (k Keycloak) reachableURL() string {
 
 // Worker holds the job consumer settings.
 type Worker struct {
-	// QueueURL is the SQS queue the server publishes to and the worker consumes from.
+	// QueueURL is the FIFO queue of operations the worker consumes from.
 	QueueURL string
+	// DeadLetterURL is the FIFO queue the worker sends messages to that no retry can fix. It is
+	// the same queue SQS redrives to when the receive count runs out, so everything that cannot
+	// be processed ends up in one place.
+	DeadLetterURL string
 	// PollTimeout is the SQS long polling wait. It is also the worst case delay between
 	// SIGTERM and the loop noticing it must stop, and SQS caps it at 20s.
 	PollTimeout time.Duration
@@ -211,6 +215,7 @@ func Load() (Config, error) {
 		},
 		Worker: Worker{
 			QueueURL:          v.GetString("SQS_QUEUE_URL"),
+			DeadLetterURL:     v.GetString("SQS_DLQ_URL"),
 			PollTimeout:       v.GetDuration("WORKER_POLL_TIMEOUT"),
 			VisibilityTimeout: v.GetInt32("WORKER_VISIBILITY_TIMEOUT"),
 			Concurrency:       v.GetInt("WORKER_CONCURRENCY"),
@@ -254,6 +259,9 @@ func (c Config) validate() error {
 	}
 	if c.Worker.Concurrency < 1 {
 		return errors.New("WORKER_CONCURRENCY must be at least 1")
+	}
+	if c.Worker.DeadLetterURL == "" {
+		return errors.New("SQS_DLQ_URL is required")
 	}
 	if c.Events.QueueURL == "" {
 		return errors.New("SQS_EVENTS_QUEUE_URL is required")

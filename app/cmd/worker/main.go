@@ -21,6 +21,7 @@ import (
 	"github.com/estrategiahq/pedro-test/app/src/handlers"
 	"github.com/estrategiahq/pedro-test/app/src/handlers/health"
 	outboxhandler "github.com/estrategiahq/pedro-test/app/src/handlers/outbox"
+	wageringhandler "github.com/estrategiahq/pedro-test/app/src/handlers/wagering"
 	"github.com/estrategiahq/pedro-test/app/src/libs/appinfo"
 	"github.com/estrategiahq/pedro-test/app/src/libs/auth"
 	"github.com/estrategiahq/pedro-test/app/src/libs/bootstrap"
@@ -78,15 +79,18 @@ type workerParams struct {
 	Account  *auth.ServiceAccount
 	Cronjobs *cronjob.Runner
 	Outbox   *outboxhandler.CronjobHandler
+	Wagering *wageringhandler.JobHandler
 }
 
 // prepareWorkers is the map of what this process does. It mirrors serverRoutes in cmd/server:
 // each domain registers itself on the runtime it needs.
 //
-// A queue consumer registers with PrepareWorker, on the job runner. A recurring task registers
+// A queue consumer registers with PrepareWorker, on the job runner: the wagering messages are the
+// first. A recurring task registers
 // with PrepareCronjob, on the cronjob runner. The outbox publisher is the first of the second
 // kind: it is a tick over the database and has no queue to poll.
 func prepareWorkers(lc fx.Lifecycle, p workerParams, obs *observability.Observer) {
+	wageringhandler.PrepareWorker(p.Runner, p.Queue, p.Wagering)
 	outboxhandler.PrepareCronjob(p.Cronjobs, p.Outbox)
 
 	// Asking for the service account token at boot surfaces a bad credential while the deploy

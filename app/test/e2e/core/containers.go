@@ -21,6 +21,7 @@ type infra struct {
 	redisURL    string
 	awsEndpoint string
 	queueURL    string
+	dlqURL      string
 	eventsURL   string
 	keycloakURL string
 
@@ -67,7 +68,8 @@ func startInfra(ctx context.Context) (*infra, error) {
 		databaseURL: postgresURL,
 		redisURL:    redisURL,
 		awsEndpoint: awsEndpoint,
-		queueURL:    fmt.Sprintf("%s/%s/pedro-test-tasks", awsEndpoint, localstackAccountID),
+		queueURL:    fmt.Sprintf("%s/%s/wager-transactions.fifo", awsEndpoint, localstackAccountID),
+		dlqURL:      fmt.Sprintf("%s/%s/wager-transactions-dlq.fifo", awsEndpoint, localstackAccountID),
 		eventsURL:   fmt.Sprintf("%s/%s/wager-events.fifo", awsEndpoint, localstackAccountID),
 		keycloakURL: keycloakURL,
 		terminate:   stop,

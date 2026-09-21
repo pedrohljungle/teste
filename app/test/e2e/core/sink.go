@@ -4,6 +4,7 @@ package core
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -134,4 +135,40 @@ func (s *Stack) WaitForEvent(t *testing.T, eventID string, timeout time.Duration
 	}
 	t.Fatalf("event %s did not reach the events queue within %s", eventID, timeout)
 	return Delivery{}
+}
+
+// DeadLetterContaining blocks until the dead letter queue holds a message whose body contains the
+// fragment, and returns it. The reason the consumer gave for giving up is in the failureReason
+// attribute.
+func (s *Stack) DeadLetterContaining(t *testing.T, fragment string, timeout time.Duration) Delivery {
+	t.Helper()
+
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if found := s.deadLetters.containing(fragment); len(found) > 0 {
+			return found[0]
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatalf("no message containing %q reached the dead letter queue within %s", fragment, timeout)
+	return Delivery{}
+}
+
+// DeadLettersContaining is every message on the dead letter queue whose body contains the fragment,
+// without waiting.
+func (s *Stack) DeadLettersContaining(fragment string) []Delivery {
+	return s.deadLetters.containing(fragment)
+}
+
+func (s *sink) containing(fragment string) []Delivery {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	var found []Delivery
+	for _, delivery := range s.deliveries {
+		if strings.Contains(delivery.Body, fragment) {
+			found = append(found, delivery)
+		}
+	}
+	return found
 }

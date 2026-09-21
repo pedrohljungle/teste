@@ -1097,18 +1097,62 @@ mudanças de saldo usa `walletVersion`, que existe para isso.
 
 | Fila | Papel | `MessageGroupId` | `MessageDeduplicationId` |
 |---|---|---|---|
-| `wager-transactions.fifo` | entrada | `walletId` | `idempotencyKey` |
-| `wager-transactions-dlq.fifo` | redrive, `maxReceiveCount=5` | — | — |
-| `wager-events.fifo` | saída da outbox | `aggregateId` | `eventId` |
-| `wager-events-dlq.fifo` | redrive | — | — |
+| `wager-transactions.fifo` | entrada: operações dos provedores | `walletId` | `idempotencyKey` |
+| `wager-transactions-dlq.fifo` | redrive (`maxReceiveCount` 5) e o que o consumidor desiste | — | hash do corpo |
+| `wager-events.fifo` | saída da outbox (§4.6) | `aggregateId` | `eventId` |
+| `wager-events-dlq.fifo` | redrive da saída | — | — |
 
-`visibility timeout` de 60s (o que já está no `init-queues.sh`), contra um processamento que
-fica na casa das dezenas de milissegundos — margem de três ordens de grandeza para a pausa de
-GC ou o pico de latência do banco. Mensagem com corpo inválido não volta para a fila: é
-`FAILED`, registrada, e removida — retry não conserta JSON quebrado.
+As filas são criadas pela infraestrutura (`docker/localstack/init-queues.sh` e
+`infra/modules/queue`), nunca pela aplicação.
 
-Continua valendo o que a §9 já diz: **a fila é criada pela infraestrutura**, nunca
-pela aplicação.
+**Por que o grupo é a carteira.** O SQS FIFO entrega um grupo de cada vez e em ordem: as operações
+de uma carteira são consumidas uma por vez, na ordem em que foram enviadas, enquanto carteiras
+diferentes andam em paralelo. É o mesmo particionamento do lock de linha (§2.7), então a fila e o
+banco concordam sobre o que precisa ser serial.
+
+**A deduplicação da fila não é a garantia.** O `MessageDeduplicationId` só vale por 5 minutos e o
+produtor pode escolher outro. O que garante que uma operação se aplica uma vez são a inbox e os
+índices únicos (§2.6), e é por isso que os testes reenviam o mesmo corpo com **outro**
+deduplication id: a fila esconderia exatamente o que se quer provar.
+
+**O contrato da mensagem** (`data` tem os campos do `POST /wagering/transactions` mais
+`idempotencyKey`, porque uma mensagem não tem header):
+
+```json
+{ "messageId": "msg-123", "type": "WagerTransactionRequested", "occurredAt": "2026-09-08T12:00:00.000Z",
+  "data": { "providerId": "provider-a", "externalTransactionId": "transaction-123",
+            "idempotencyKey": "provider-a:transaction-123", "playerId": "…", "walletId": "…",
+            "roundId": "round-987", "gameId": "fortune-chimp", "kind": "BET",
+            "money": { "amount": "25.00", "currency": "BRL" } } }
+```
+
+**A inbox e a transação única.** O registro da inbox, tudo o que a operação faz (transação, saldo,
+ledger, eventos) e a conclusão do tratamento são **um commit**. É o que torna seguro apagar a
+mensagem depois, e inofensivo um crash entre o commit e a remoção: a mensagem volta, a inbox já a
+tem, nada se repete. O `Insert` usa `ON CONFLICT DO NOTHING` para uma duplicata não abortar a
+transação, e a chave `(consumer, messageId)` faz duas entregas simultâneas se serializarem: a
+segunda espera a primeira e encontra o registro. O hash do **corpo exato** distingue uma reentrega
+de outra mensagem que reutilizou o id.
+
+**Três destinos para uma mensagem**, decididos no handler a partir do que o service devolveu:
+
+| O que aconteceu | Destino |
+|---|---|
+| aplicada, replay ou **rejeição de negócio** (gravada como `REJECTED`) | apagada da fila |
+| nenhuma retentativa muda o resultado: corpo malformado, tipo desconhecido, `OPENING`, conflito de idempotência, conflito de `messageId` | **enviada à DLQ com o motivo** (`failureReason`) e só então apagada |
+| armazenamento indisponível (transitório) | **não apagada**: volta após o visibility timeout, e depois de `maxReceiveCount` o SQS a manda à DLQ |
+
+Se a própria DLQ não puder ser alcançada, o erro é devolvido e a mensagem não se perde: volta e é
+descartada de novo. `WALLET_NOT_FOUND` é o único caso de rejeição sem registro (não há carteira para
+prender a transação): a resposta é definitiva, a mensagem é apagada e não há linha na inbox.
+
+**Limites.** `maxReceiveCount` = 5, `VisibilityTimeout` = 60 s (deve exceder o handler mais lento).
+Uma mensagem que falha sempre chega à DLQ depois de 5 recebimentos.
+
+**`SIGTERM`.** O `jobrunner` para de buscar e o `OnStop` espera as mensagens em andamento; o
+contexto de cada mensagem não herda o cancelamento do laço, então um commit em curso termina. O que
+não terminar no prazo fica sem ack e volta pela fila, sem efeito duplicado por causa da inbox.
+
 ### 4.8 Contratos HTTP
 
 | Rota | Autorização | Códigos |

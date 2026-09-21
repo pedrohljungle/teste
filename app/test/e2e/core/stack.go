@@ -57,9 +57,10 @@ type Stack struct {
 	Faults *Faults
 
 	queueURL    string
+	dlqURL      string
 	awsEndpoint string
-	recorder    *recorder
 	sink        *sink
+	deadLetters *sink
 	poolOnce    sync.Once
 	pool        *pgxpool.Pool
 	poolErr     error
@@ -100,6 +101,7 @@ func Start(ctx context.Context) (*Stack, error) {
 // Stop shuts the application down and terminates the containers.
 func (s *Stack) Stop(ctx context.Context) error {
 	s.sink.stop()
+	s.deadLetters.stop()
 	err := s.app.Stop(ctx)
 	if s.pool != nil {
 		s.pool.Close()
@@ -128,6 +130,7 @@ func boot(ctx context.Context, in *infra) (*Stack, error) {
 		"AWS_ACCESS_KEY_ID":      "test",
 		"AWS_SECRET_ACCESS_KEY":  "test",
 		"SQS_QUEUE_URL":          in.queueURL,
+		"SQS_DLQ_URL":            in.dlqURL,
 		"SQS_EVENTS_QUEUE_URL":   in.eventsURL,
 		"WORKER_POLL_TIMEOUT":    "2s",
 		// Short on purpose: a redelivery scenario waits for this to expire, and ten seconds
@@ -152,7 +155,6 @@ func boot(ctx context.Context, in *infra) (*Stack, error) {
 		}
 	}
 
-	handler := &recorder{}
 	repos := &Repositories{}
 	faults := newFaults()
 
@@ -174,7 +176,6 @@ func boot(ctx context.Context, in *infra) (*Stack, error) {
 
 		fx.Populate(&repos.UnitOfWork, &repos.Wallets, &repos.Wagering, &repos.Outbox),
 
-		fx.Supply(handler),
 		fx.Invoke(prepareWorkers),
 		fx.Invoke(registerOutboxCronjob),
 		fx.Invoke(jobrunner.Run),
@@ -195,16 +196,23 @@ func boot(ctx context.Context, in *infra) (*Stack, error) {
 		_ = app.Stop(ctx)
 		return nil, fmt.Errorf("start the events sink: %w", err)
 	}
+	deadLetters, err := startSink(ctx, in.awsEndpoint, in.dlqURL)
+	if err != nil {
+		events.stop()
+		_ = app.Stop(ctx)
+		return nil, fmt.Errorf("start the dead letter sink: %w", err)
+	}
 
 	return &Stack{
 		Repos:       repos,
 		Faults:      faults,
 		sink:        events,
+		deadLetters: deadLetters,
 		BaseURL:     "http://127.0.0.1:" + port,
 		KeycloakURL: in.keycloakURL,
 		queueURL:    in.queueURL,
+		dlqURL:      in.dlqURL,
 		awsEndpoint: in.awsEndpoint,
-		recorder:    handler,
 		app:         app,
 		infra:       in,
 	}, nil
@@ -261,9 +269,10 @@ func runServer(lc fx.Lifecycle, e *echo.Echo, cfg config.Config) {
 	})
 }
 
-// prepareWorkers registers the suite's recorder where a domain would register its handler.
-func prepareWorkers(runner *jobrunner.Runner, source *queue.SQS, handler *recorder) {
-	runner.Register(source, handler.handle)
+// prepareWorkers mirrors cmd/worker: the wagering messages are registered on the job runner through
+// the same PrepareWorker, so what the suite consumes is the real handler.
+func prepareWorkers(runner *jobrunner.Runner, source *queue.SQS, handler *wageringhandler.JobHandler) {
+	wageringhandler.PrepareWorker(runner, source, handler)
 }
 
 func freePort() (string, error) {

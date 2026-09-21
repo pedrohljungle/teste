@@ -19,7 +19,9 @@ x-app-env: &app-env
   AWS_ENDPOINT_URL: http://localstack:4566
   AWS_ACCESS_KEY_ID: test
   AWS_SECRET_ACCESS_KEY: test
-  SQS_QUEUE_URL: http://localstack:4566/000000000000/pedro-test-tasks
+  # The FIFO queue of operations, and the dead letter queue for what no retry can fix.
+  SQS_QUEUE_URL: http://localstack:4566/000000000000/wager-transactions.fifo
+  SQS_DLQ_URL: http://localstack:4566/000000000000/wager-transactions-dlq.fifo
   # Where the outbox publisher sends the integration events. FIFO, created by the init script.
   SQS_EVENTS_QUEUE_URL: http://localstack:4566/000000000000/wager-events.fifo
   # The application speaks OTLP straight to the observability backend: no collector in
@@ -147,7 +149,7 @@ services:
     volumes:
       - ./docker/localstack:/etc/localstack/init/ready.d:ro
     healthcheck:
-      test: ["CMD-SHELL", "awslocal sqs get-queue-url --queue-name pedro-test-tasks || exit 1"]
+      test: ["CMD-SHELL", "awslocal sqs get-queue-url --queue-name wager-transactions.fifo || exit 1"]
       interval: 5s
       timeout: 5s
       retries: 30

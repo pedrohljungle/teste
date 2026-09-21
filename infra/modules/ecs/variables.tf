@@ -127,6 +127,16 @@ variable "queue_arn" {
   type        = string
 }
 
+variable "dlq_url" {
+  description = "URL of the dead letter queue the worker sends unprocessable messages to."
+  type        = string
+}
+
+variable "dlq_arn" {
+  description = "ARN of the dead letter queue, for the worker policy."
+  type        = string
+}
+
 variable "events_queue_url" {
   description = "URL of the FIFO queue of integration events, which the outbox publisher sends to."
   type        = string

@@ -81,6 +81,8 @@ module "ecs" {
 
   queue_url                = module.queue.queue_url
   queue_arn                = module.queue.queue_arn
+  dlq_url                  = module.queue.dlq_url
+  dlq_arn                  = module.queue.dlq_arn
   queue_visibility_timeout = module.queue.visibility_timeout_seconds
 
   events_queue_url = module.queue.events_queue_url

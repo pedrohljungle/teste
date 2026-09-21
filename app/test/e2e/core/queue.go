@@ -4,6 +4,7 @@ package core
 
 import (
 	"context"
+	"strconv"
 	"testing"
 	"time"
 
@@ -13,18 +14,41 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/sqs/types"
 )
 
-// Publish writes straight to SQS, which is how a test reaches the worker without going through
-// the server. The payload is opaque: the runtime carries bytes, and so does this.
-func (s *Stack) Publish(t *testing.T, payload string) {
+// PublishMessage sends a message to the FIFO queue of operations the way a producer does, choosing
+// the message group and the deduplication id. A scenario about the application deduplicating sends
+// the same body under different deduplication ids, because the queue drops a repeated one inside its
+// window and would hide the very thing the scenario is about.
+func (s *Stack) PublishMessage(t *testing.T, groupID, deduplicationID, body string) {
 	t.Helper()
 
 	_, err := s.sqs(t).SendMessage(context.Background(), &sqs.SendMessageInput{
-		QueueUrl:    awssdk.String(s.queueURL),
-		MessageBody: awssdk.String(payload),
+		QueueUrl:               awssdk.String(s.queueURL),
+		MessageBody:            awssdk.String(body),
+		MessageGroupId:         awssdk.String(groupID),
+		MessageDeduplicationId: awssdk.String(deduplicationID),
 	})
 	if err != nil {
 		t.Fatalf("publish a message: %v", err)
 	}
+}
+
+// QueueState is how many messages are waiting and how many are being processed.
+func (s *Stack) QueueState(t *testing.T) (visible, inFlight int) {
+	t.Helper()
+
+	out, err := s.sqs(t).GetQueueAttributes(context.Background(), &sqs.GetQueueAttributesInput{
+		QueueUrl: awssdk.String(s.queueURL),
+		AttributeNames: []types.QueueAttributeName{
+			types.QueueAttributeNameApproximateNumberOfMessages,
+			types.QueueAttributeNameApproximateNumberOfMessagesNotVisible,
+		},
+	})
+	if err != nil {
+		t.Fatalf("read queue attributes: %v", err)
+	}
+	visible, _ = strconv.Atoi(out.Attributes["ApproximateNumberOfMessages"])
+	inFlight, _ = strconv.Atoi(out.Attributes["ApproximateNumberOfMessagesNotVisible"])
+	return visible, inFlight
 }
 
 // WaitForEmptyQueue waits until nothing is visible and nothing is in flight. It is how a test

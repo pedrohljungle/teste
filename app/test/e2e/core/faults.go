@@ -5,6 +5,7 @@ package core
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"time"
 
@@ -12,6 +13,8 @@ import (
 
 	"github.com/estrategiahq/pedro-test/app/src/entities"
 	outboxiface "github.com/estrategiahq/pedro-test/app/src/interfaces/outbox"
+	persistenceiface "github.com/estrategiahq/pedro-test/app/src/interfaces/persistence"
+	wageringiface "github.com/estrategiahq/pedro-test/app/src/interfaces/wagering"
 )
 
 // Faults is where a scenario asks for a failure that cannot be provoked from outside: a broker
@@ -27,6 +30,7 @@ type Faults struct {
 	mu           sync.Mutex
 	failPublish  map[string]int
 	failComplete map[string]int
+	failStorage  map[string]int
 	attempts     map[string][]time.Time
 }
 
@@ -34,6 +38,7 @@ func newFaults() *Faults {
 	return &Faults{
 		failPublish:  map[string]int{},
 		failComplete: map[string]int{},
+		failStorage:  map[string]int{},
 		attempts:     map[string][]time.Time{},
 	}
 }
@@ -52,6 +57,15 @@ func (f *Faults) FailRecordingPublication(eventID string, times int) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.failComplete[eventID] = times
+}
+
+// FailStorageFor makes the storage unavailable, as an unreachable database is, the next times the
+// operation with that idempotency key is looked up. It is a transient failure by construction: the
+// operation succeeds as soon as the failures are used up.
+func (f *Faults) FailStorageFor(idempotencyKey string, times int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.failStorage[idempotencyKey] = times
 }
 
 // PublishAttempts is when each publication of an event was attempted, by any instance, whether it
@@ -87,6 +101,9 @@ func (f *Faults) options() fx.Option {
 		fx.Decorate(func(inner outboxiface.Repository) outboxiface.Repository {
 			return &faultyRepository{Repository: inner, faults: f}
 		}),
+		fx.Decorate(func(inner wageringiface.Repository) wageringiface.Repository {
+			return &faultyWagering{Repository: inner, faults: f}
+		}),
 	)
 }
 
@@ -115,4 +132,18 @@ func (r *faultyRepository) Complete(ctx context.Context, event *entities.OutboxE
 		return errors.New("injected: the process died before recording the publication")
 	}
 	return r.Repository.Complete(ctx, event)
+}
+
+// faultyWagering passes everything through but the lookup by idempotency key, which every
+// operation makes first and which is where an unreachable database shows up.
+type faultyWagering struct {
+	wageringiface.Repository
+	faults *Faults
+}
+
+func (r *faultyWagering) FindByKey(ctx context.Context, providerID, key string) (*entities.WagerTransaction, error) {
+	if r.faults.consume(r.faults.failStorage, key) {
+		return nil, fmt.Errorf("injected: %w", persistenceiface.ErrUnavailable)
+	}
+	return r.Repository.FindByKey(ctx, providerID, key)
 }

@@ -139,18 +139,38 @@ sem token, **403** sem papel.
 
 ### Exercitando a fila
 
-Publique direto no SQS do LocalStack e veja o worker consumir:
+A fila de operações é FIFO. Publique direto no SQS do LocalStack e veja o worker consumir. O
+`MessageGroupId` é a carteira (as operações de uma carteira são consumidas uma de cada vez, em
+ordem) e o `MessageDeduplicationId` é a chave de idempotência:
 
 ```bash
 aws --endpoint-url=http://localhost:4566 sqs send-message \
-  --queue-url http://localhost:4566/000000000000/pedro-test-tasks \
-  --message-body '{"exemplo":true}'
+  --queue-url http://localhost:4566/000000000000/wager-transactions.fifo \
+  --message-group-id "$WALLET_ID" \
+  --message-deduplication-id "provider-a:transaction-123" \
+  --message-body '{
+    "messageId": "msg-123",
+    "type": "WagerTransactionRequested",
+    "occurredAt": "2026-09-08T12:00:00.000Z",
+    "data": {
+      "providerId": "provider-a",
+      "externalTransactionId": "transaction-123",
+      "idempotencyKey": "provider-a:transaction-123",
+      "playerId": "'"$PLAYER_ID"'",
+      "walletId": "'"$WALLET_ID"'",
+      "roundId": "round-987",
+      "gameId": "fortune-chimp",
+      "kind": "BET",
+      "money": { "amount": "25.00", "currency": "BRL" }
+    }
+  }'
 
 docker compose logs -f worker
 ```
 
-Sem domínio registrado, o worker sobe, avisa que não consome nada e responde o probe. Quem
-registra um consumidor é `prepareWorkers` em `app/cmd/worker/main.go`, numa linha.
+O que nenhuma retentativa conserta (corpo malformado, tipo desconhecido, conflito de idempotência)
+vai para `wager-transactions-dlq.fifo` com o motivo no atributo `failureReason`, e sai da fila
+principal.
 
 ---
 

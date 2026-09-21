@@ -1,21 +1,27 @@
-# The job queue, with its dead letter queue.
+# The queue of operations, with its dead letter queue, and the queue of integration events.
 #
 # It is created here and not by the application on purpose: in AWS the tasks will not have
 # permission to create their own infrastructure, and it is better that the local stack has the
 # same restriction (see docker/localstack/init-queues.sh).
 
 resource "aws_sqs_queue" "dlq" {
-  name = "${var.name}-tasks-dlq"
+  name       = "${var.name}-wager-transactions-dlq.fifo"
+  fifo_queue = true
 
-  # Two weeks, the maximum: a message that failed five times is evidence someone has to look
-  # at, and it has to survive a long weekend.
+  # Two weeks, the maximum: a message that failed five times, or that the worker gave up on, is
+  # evidence someone has to look at, and it has to survive a long weekend.
   message_retention_seconds = 1209600
 
-  tags = { Name = "${var.name}-tasks-dlq" }
+  tags = { Name = "${var.name}-wager-transactions-dlq" }
 }
 
+# The operations the providers send. FIFO: the producer sets the message group to the wallet id, so
+# one wallet is consumed one message at a time and in order while different wallets go in
+# parallel, and the deduplication id to the idempotency key. The queue's deduplication is an
+# optimisation of the idempotency the database guarantees, never the guarantee itself.
 resource "aws_sqs_queue" "tasks" {
-  name = "${var.name}-tasks"
+  name       = "${var.name}-wager-transactions.fifo"
+  fifo_queue = true
 
   # Must exceed the slowest handler, otherwise a message still being processed is delivered
   # again. It matches WORKER_VISIBILITY_TIMEOUT in the task definition.
@@ -29,13 +35,13 @@ resource "aws_sqs_queue" "tasks" {
     maxReceiveCount     = var.max_receive_count
   })
 
-  tags = { Name = "${var.name}-tasks" }
+  tags = { Name = "${var.name}-wager-transactions" }
 }
 
 # An alarm on the dead letter queue is the only thing that turns "the worker gave up" into
 # something a person hears about.
 resource "aws_cloudwatch_metric_alarm" "dlq_not_empty" {
-  alarm_name          = "${var.name}-tasks-dlq-not-empty"
+  alarm_name          = "${var.name}-wager-transactions-dlq-not-empty"
   alarm_description   = "Messages the worker could not process after ${var.max_receive_count} deliveries"
   namespace           = "AWS/SQS"
   metric_name         = "ApproximateNumberOfMessagesVisible"
