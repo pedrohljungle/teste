@@ -55,13 +55,28 @@ var (
 	Any      = zap.Any
 )
 
+// Tag is one dimension of a metric. Layers build them with Tag's constructor below and never touch
+// the OpenTelemetry attribute type, for the same reason they never touch zap.
+type Tag = attribute.KeyValue
+
+// NewTag builds a metric dimension. Keep the values few and bounded: a status, a kind, a failure
+// code. An id here would give the metric a series per request.
+func NewTag(key, value string) Tag { return attribute.String(key, value) }
+
 // Observer is the instrumentation handle injected into every layer.
 type Observer struct {
 	log      *zap.Logger
 	tracer   trace.Tracer
+	meter    metric.Meter
 	duration metric.Int64Histogram
 	failures metric.Int64Counter
 	app      appinfo.App
+
+	// counters and histograms are the metrics the layers asked for by name, created the first time
+	// and reused after, so a layer names its metric where it uses it and nothing has to register
+	// it somewhere else first.
+	counters   sync.Map
+	histograms sync.Map
 }
 
 // NewObserver builds an Observer over an already configured tracer and meter.
@@ -84,6 +99,7 @@ func NewObserver(app appinfo.App, log *zap.Logger, tracer trace.Tracer, meter me
 	return &Observer{
 		log:      log.With(zap.String("app", app.Name), zap.String("role", string(app.Role))),
 		tracer:   tracer,
+		meter:    meter,
 		duration: duration,
 		failures: failures,
 		app:      app,
@@ -119,6 +135,9 @@ func (o *Observer) Zap() *zap.Logger { return o.log }
 //
 // The short form, defer end(err), evaluates err while it is still nil.
 func (o *Observer) Start(ctx context.Context, layer Layer, operation string, fields ...Field) (context.Context, func(error)) {
+	// What the operation knows about itself, such as the wallet or the message it works on, goes into
+	// the context, so every line logged below it names what it is about.
+	ctx = WithFields(ctx, fields...)
 	ctx, span := o.tracer.Start(ctx, operation, trace.WithAttributes(
 		attribute.String(attrLayer, string(layer)),
 		attribute.String(attrOperation, operation),
@@ -133,7 +152,7 @@ func (o *Observer) Start(ctx context.Context, layer Layer, operation string, fie
 			status = "error"
 			span.RecordError(err)
 			span.SetStatus(codes.Error, err.Error())
-			o.recordFailure(ctx, layer, operation, err, elapsed, fields)
+			o.recordFailure(ctx, layer, operation, err, elapsed)
 		}
 		o.duration.Record(ctx, elapsed.Milliseconds(), metric.WithAttributes(
 			attribute.String(attrLayer, string(layer)),
@@ -144,7 +163,7 @@ func (o *Observer) Start(ctx context.Context, layer Layer, operation string, fie
 	}
 }
 
-func (o *Observer) recordFailure(ctx context.Context, layer Layer, operation string, err error, elapsed time.Duration, fields []Field) {
+func (o *Observer) recordFailure(ctx context.Context, layer Layer, operation string, err error, elapsed time.Duration) {
 	o.failures.Add(ctx, 1, metric.WithAttributes(
 		attribute.String(attrLayer, string(layer)),
 		attribute.String(attrOperation, operation),
@@ -152,8 +171,8 @@ func (o *Observer) recordFailure(ctx context.Context, layer Layer, operation str
 	if !shouldLog(ctx, err) {
 		return
 	}
-	all := make([]Field, 0, len(fields)+4)
-	all = append(all, fields...)
+	// The identifiers the operation declared are already in ctx, and correlation adds them.
+	all := make([]Field, 0, 4)
 	all = append(all,
 		zap.String(attrLayer, string(layer)),
 		zap.String(attrOperation, operation),
@@ -188,15 +207,47 @@ func (o *Observer) Debug(ctx context.Context, msg string, fields ...Field) {
 	o.log.With(o.correlation(ctx)...).Debug(msg, fields...)
 }
 
+// correlation is what every line carries: the trace it belongs to, the correlation id of the request
+// or message that started it, and the identifiers the operations above it declared.
 func (o *Observer) correlation(ctx context.Context) []Field {
-	sc := trace.SpanContextFromContext(ctx)
-	if !sc.IsValid() {
-		return nil
+	var fields []Field
+	if sc := trace.SpanContextFromContext(ctx); sc.IsValid() {
+		fields = append(fields,
+			zap.String("trace_id", sc.TraceID().String()),
+			zap.String("span_id", sc.SpanID().String()),
+		)
 	}
-	return []Field{
-		zap.String("trace_id", sc.TraceID().String()),
-		zap.String("span_id", sc.SpanID().String()),
+	if id := CorrelationID(ctx); id != "" {
+		fields = append(fields, zap.String("correlationId", id))
 	}
+	return append(fields, contextFields(ctx)...)
+}
+
+// Count adds one to a counter, created on first use. It is how a layer says "this happened": a
+// transaction ended with a status, a message was a duplicate, an event was published.
+func (o *Observer) Count(ctx context.Context, name string, tags ...Tag) {
+	counter, ok := o.counters.Load(name)
+	if !ok {
+		created, err := o.meter.Int64Counter(name)
+		if err != nil {
+			return
+		}
+		counter, _ = o.counters.LoadOrStore(name, created)
+	}
+	counter.(metric.Int64Counter).Add(ctx, 1, metric.WithAttributes(tags...))
+}
+
+// Measure records how long something took, in seconds, in a histogram created on first use.
+func (o *Observer) Measure(ctx context.Context, name string, elapsed time.Duration, tags ...Tag) {
+	histogram, ok := o.histograms.Load(name)
+	if !ok {
+		created, err := o.meter.Float64Histogram(name, metric.WithUnit("s"))
+		if err != nil {
+			return
+		}
+		histogram, _ = o.histograms.LoadOrStore(name, created)
+	}
+	histogram.(metric.Float64Histogram).Record(ctx, elapsed.Seconds(), metric.WithAttributes(tags...))
 }
 
 // An error raised in the repository crosses the service and the handler. It is recorded on

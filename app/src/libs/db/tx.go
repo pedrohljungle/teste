@@ -52,6 +52,11 @@ func (a *Accessor) Q(ctx context.Context) Querier {
 	return a.pool
 }
 
+// Ping asks the database for a round trip.
+func (a *Accessor) Ping(ctx context.Context) error {
+	return a.pool.Ping(ctx)
+}
+
 // InTransaction reports whether the context carries an open transaction.
 func (a *Accessor) InTransaction(ctx context.Context) bool {
 	_, ok := transactionFrom(ctx)

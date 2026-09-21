@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/estrategiahq/pedro-test/app/src/entities"
 	wageringiface "github.com/estrategiahq/pedro-test/app/src/interfaces/wagering"
@@ -27,7 +28,11 @@ func (s *service) Receive(ctx context.Context, message structs.WagerMessage) (ou
 		observability.String("messageId", message.ID),
 		observability.String("providerId", message.Operation.ProviderID),
 	)
-	defer func() { end(err) }()
+	started := time.Now()
+	defer func() {
+		end(err)
+		s.record(ctx, sourceSQS, started, message.Operation.Kind, outcome, err)
+	}()
 
 	correlationID := s.correlationID(ctx)
 
@@ -47,6 +52,7 @@ func (s *service) Receive(ctx context.Context, message structs.WagerMessage) (ou
 
 	outcome, err = attempt()
 	if errors.Is(err, wageringiface.ErrDuplicate) {
+		s.obs.Count(ctx, "wager_concurrent_duplicates_total", observability.NewTag("source", sourceSQS))
 		// The same operation arrived under another message id at the same moment and won the race
 		// for the unique index. Everything of this attempt, the inbox record included, was rolled
 		// back, so trying again is safe, and this time the operation is found and resolved as the

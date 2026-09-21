@@ -7,6 +7,7 @@ import (
 
 	wageringiface "github.com/estrategiahq/pedro-test/app/src/interfaces/wagering"
 	"github.com/estrategiahq/pedro-test/app/src/repositories/cache"
+	"github.com/estrategiahq/pedro-test/app/src/repositories/health"
 	"github.com/estrategiahq/pedro-test/app/src/repositories/inbox"
 	"github.com/estrategiahq/pedro-test/app/src/repositories/outbox"
 	"github.com/estrategiahq/pedro-test/app/src/repositories/persistence"
@@ -34,5 +35,6 @@ var Module = fx.Module("repositories",
 	wagering.Module,
 	outbox.Module,
 	inbox.Module,
+	health.Module,
 	fx.Provide(func(q *queue.SQS) wageringiface.DeadLetter { return q }),
 )

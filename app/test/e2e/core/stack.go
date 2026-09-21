@@ -52,6 +52,7 @@ type Stack struct {
 	Repos *Repositories
 	// KeycloakURL is the realm root, for fetching tokens.
 	KeycloakURL string
+	telemetry   *telemetry
 	// Faults injects the failures a scenario cannot provoke from outside, at the ports of the
 	// outbox.
 	Faults *Faults
@@ -164,6 +165,7 @@ func boot(ctx context.Context, in *infra) (*Stack, error) {
 
 	repos := &Repositories{}
 	faults := newFaults()
+	captured := newTelemetry()
 
 	app := fx.New(
 		fx.Supply(appinfo.App{Name: "pedro-test-e2e", Role: appinfo.RoleServer, Version: "test"}),
@@ -176,6 +178,7 @@ func boot(ctx context.Context, in *infra) (*Stack, error) {
 		jobrunner.Module,
 		cronjob.Module,
 		faults.options(),
+		captured.options(),
 
 		fx.Provide(newEcho),
 		fx.Invoke(serverRoutes),
@@ -213,6 +216,7 @@ func boot(ctx context.Context, in *infra) (*Stack, error) {
 	return &Stack{
 		Repos:       repos,
 		Faults:      faults,
+		telemetry:   captured,
 		sink:        events,
 		deadLetters: deadLetters,
 		BaseURL:     "http://127.0.0.1:" + port,

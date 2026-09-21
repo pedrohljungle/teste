@@ -64,10 +64,21 @@ func (s *service) PublishDue(ctx context.Context) (found int, err error) {
 // event that cannot be published must not hold back the others of the batch, and the failure is
 // already the event being rescheduled.
 func (s *service) publish(ctx context.Context, event *entities.OutboxEvent) {
+	ctx = observability.WithFields(ctx,
+		observability.String("eventId", event.ID().String()),
+		observability.String("eventType", string(event.Type())),
+		observability.String("correlationId", event.CorrelationID()),
+	)
 	if err := s.publisher.Publish(ctx, event); err != nil {
+		s.obs.Count(ctx, "outbox_publish_attempts_total", observability.NewTag("result", "failure"))
 		s.reschedule(ctx, event, err)
 		return
 	}
+	s.obs.Count(ctx, "outbox_publish_attempts_total", observability.NewTag("result", "success"))
+	// The delay between the event happening and the broker having it: the lag of the outbox, which is
+	// what tells a healthy publisher from one that is falling behind.
+	s.obs.Measure(ctx, "outbox_publish_delay_seconds", s.now().Sub(event.OccurredAt()),
+		observability.NewTag("event_type", string(event.Type())))
 	if err := event.MarkPublished(s.now()); err != nil {
 		s.obs.Error(ctx, err, "could not mark the event as published", observability.String("eventId", event.ID().String()))
 		return

@@ -436,21 +436,42 @@ dinheiro em string decimal:
 alteração de saldo. A abertura com saldo positivo produz os dois, no mesmo commit da carteira.
 ### 2.9 Observabilidade do domínio
 
-A superfície já existe (`Observer`). Falta o vocabulário do domínio.
+A superfície é o `Observer` (`Start`, `Count`, `Measure`, `WithFields`). O domínio acrescenta o
+vocabulário, e o e2e (`observability_test.go`) lê métricas e linhas de log em memória para provar
+que cada uma é emitida.
 
-**Campos de log** — `correlationId`, `messageId`, `transactionId`, `walletId`, `providerId`.
-Nunca o payload financeiro completo nem credencial: `money` não entra em log.
+**Campos de log** — `correlationId` (o request id no HTTP, o id da mensagem na fila),
+`messageId`, `transactionId`, `walletId`, `providerId`. Vão no contexto (`WithFields`), então toda
+linha escrita depois os carrega. Nunca o valor monetário, o token nem o segredo do client: os
+cenários procuram esses valores em todas as linhas.
 
-**Métricas** — `wager_transactions_total{kind,status,failure_code}` ·
-`wager_idempotent_replays_total{source}` · `wager_payload_conflicts_total` ·
-`wallet_lock_contention_seconds` · `inbox_duplicates_total` · `outbox_pending_age_seconds` ·
-`outbox_publish_attempts_total{result}` · `sqs_dlq_messages_total` ·
-`reconciliation_divergences_total` · `wager_processing_duration_seconds{kind}`.
+**Métricas**
 
-**Health** — `/health/live` é o processo. `/health/ready` verifica Postgres (`SELECT 1`) e SQS
-(`GetQueueAttributes`), com timeout curto. Ambos fora da autenticação, pelo motivo que o
-a §8 já registra: probe que depende do IdP transforma queda do Keycloak em reciclagem
-de tudo.
+| Métrica | Tags | Quando |
+|---|---|---|
+| `wager_transactions_total` | `kind`, `status`, `failure_code` (só em rejeição) | operação concluída |
+| `wager_idempotent_replays_total` | `source` | repetição devolvida do que foi guardado |
+| `wager_payload_conflicts_total` | `source` | mesma chave, conteúdo diferente |
+| `wager_invalid_operations_total` | `source` | operação inválida na borda do service |
+| `wager_unattached_rejections_total` | `source`, `failure_code` | rejeição sem transação gravada |
+| `wager_concurrent_duplicates_total` | `source` | perdeu a corrida da unicidade e leu o vencedor |
+| `wager_reference_retries_total` | — | nova tentativa de referência pendente |
+| `wager_processing_duration_seconds` | `source`, `kind` | duração do processamento |
+| `wallet_lock_wait_seconds` | — | espera pelo `FOR UPDATE` da carteira |
+| `inbox_duplicates_total` | — | mensagem já vista |
+| `sqs_message_retries_total` | — | mensagem devolvida à fila |
+| `sqs_dead_letters_total` | `reason` | mensagem enviada à DLQ |
+| `outbox_publish_attempts_total` | `result` | tentativa de publicar evento |
+| `outbox_publish_delay_seconds` | — | do `occurredAt` até a publicação |
+| `reconciliations_total` | `consistent` | conciliação executada |
+| `reconciliation_divergences_total` | — | divergência encontrada |
+
+**Health** — `/health/live` é o processo: responde 200 enquanto ele roda. `/health/ready`
+verifica Postgres (ping) e SQS, e devolve 503 nomeando a dependência que falhou; viva não é pronta,
+então uma instância sem banco sai da rotação em vez de ser reciclada. Ambos ficam fora da
+autenticação, pelo motivo que a §8 já registra: probe que depende do IdP transforma queda do
+Keycloak em reciclagem de tudo. O boot, por outro lado, **falha** quando o IdP não responde depois
+das tentativas do verifier.
 
 ---
 

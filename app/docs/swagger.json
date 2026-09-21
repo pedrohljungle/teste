@@ -10,7 +10,7 @@
     "paths": {
         "/health": {
             "get": {
-                "description": "Aberta de propósito, para um orquestrador sem token conseguir perguntar. Diz também qual aplicação e versão respondeu.",
+                "description": "O processo está de pé. Não olha para nenhuma dependência: um processo vivo que não alcança o banco deve sair de rotação, não ser morto. Aberta de propósito, para um orquestrador sem token conseguir perguntar. `/health` é o mesmo probe, com o nome que a infraestrutura já usa.",
                 "produces": [
                     "application/json"
                 ],
@@ -23,6 +23,52 @@
                         "description": "OK",
                         "schema": {
                             "$ref": "#/definitions/health.Status"
+                        }
+                    }
+                }
+            }
+        },
+        "/health/live": {
+            "get": {
+                "description": "O processo está de pé. Não olha para nenhuma dependência: um processo vivo que não alcança o banco deve sair de rotação, não ser morto. Aberta de propósito, para um orquestrador sem token conseguir perguntar. `/health` é o mesmo probe, com o nome que a infraestrutura já usa.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "operations"
+                ],
+                "summary": "Liveness",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/health.Status"
+                        }
+                    }
+                }
+            }
+        },
+        "/health/ready": {
+            "get": {
+                "description": "Pergunta ao PostgreSQL e ao SQS. 200 quando todos respondem, 503 quando algum não, com o estado de cada um. É o probe que decide se a instância recebe tráfego. Aberta de propósito.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "operations"
+                ],
+                "summary": "Readiness",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/health.Readiness"
+                        }
+                    },
+                    "503": {
+                        "description": "Service Unavailable",
+                        "schema": {
+                            "$ref": "#/definitions/health.Readiness"
                         }
                     }
                 }
@@ -551,6 +597,25 @@
         }
     },
     "definitions": {
+        "health.Readiness": {
+            "type": "object",
+            "properties": {
+                "checks": {
+                    "type": "object",
+                    "additionalProperties": {
+                        "type": "string"
+                    }
+                },
+                "status": {
+                    "type": "string",
+                    "enum": [
+                        "ok",
+                        "unavailable"
+                    ],
+                    "example": "ok"
+                }
+            }
+        },
         "health.Status": {
             "type": "object",
             "properties": {

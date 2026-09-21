@@ -3,6 +3,7 @@ package wallet
 import (
 	"context"
 	"fmt"
+	"strconv"
 
 	"github.com/google/uuid"
 
@@ -36,7 +37,9 @@ func (s *service) Reconcile(ctx context.Context, walletID uuid.UUID) (result str
 		return structs.Reconciliation{}, err
 	}
 
+	s.obs.Count(ctx, "reconciliations_total", observability.NewTag("consistent", strconv.FormatBool(result.Consistent)))
 	if !result.Consistent {
+		s.obs.Count(ctx, "reconciliation_divergences_total")
 		// Reported and never corrected: a balance that disagrees with its ledger is a fact for a
 		// person to investigate, and rewriting it here would destroy the evidence.
 		s.obs.Error(ctx, fmt.Errorf("%w: stored %s, rebuilt from the ledger %s, difference %s",

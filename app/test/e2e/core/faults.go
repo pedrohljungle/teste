@@ -12,6 +12,7 @@ import (
 	"go.uber.org/fx"
 
 	"github.com/estrategiahq/pedro-test/app/src/entities"
+	healthiface "github.com/estrategiahq/pedro-test/app/src/interfaces/health"
 	outboxiface "github.com/estrategiahq/pedro-test/app/src/interfaces/outbox"
 	persistenceiface "github.com/estrategiahq/pedro-test/app/src/interfaces/persistence"
 	wageringiface "github.com/estrategiahq/pedro-test/app/src/interfaces/wagering"
@@ -32,6 +33,7 @@ type Faults struct {
 	failComplete map[string]int
 	failStorage  map[string]int
 	attempts     map[string][]time.Time
+	down         map[string]bool
 }
 
 func newFaults() *Faults {
@@ -40,6 +42,7 @@ func newFaults() *Faults {
 		failComplete: map[string]int{},
 		failStorage:  map[string]int{},
 		attempts:     map[string][]time.Time{},
+		down:         map[string]bool{},
 	}
 }
 
@@ -66,6 +69,21 @@ func (f *Faults) FailStorageFor(idempotencyKey string, times int) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.failStorage[idempotencyKey] = times
+}
+
+// SetDependencyDown makes a dependency answer the readiness probe as an unreachable one does, until
+// it is set back. The probe is what is under test, not the dependency: the failure is injected at
+// the checker's port, and the response, the status and the log are the real ones.
+func (f *Faults) SetDependencyDown(name string, down bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.down[name] = down
+}
+
+func (f *Faults) isDown(name string) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.down[name]
 }
 
 // PublishAttempts is when each publication of an event was attempted, by any instance, whether it
@@ -104,6 +122,16 @@ func (f *Faults) options() fx.Option {
 		fx.Decorate(func(inner wageringiface.Repository) wageringiface.Repository {
 			return &faultyWagering{Repository: inner, faults: f}
 		}),
+		fx.Decorate(fx.Annotate(
+			func(checkers []healthiface.Checker) []healthiface.Checker {
+				wrapped := make([]healthiface.Checker, len(checkers))
+				for i, checker := range checkers {
+					wrapped[i] = &faultyChecker{inner: checker, faults: f}
+				}
+				return wrapped
+			},
+			fx.ParamTags(`group:"health"`), fx.ResultTags(`group:"health"`),
+		)),
 	)
 }
 
@@ -146,4 +174,18 @@ func (r *faultyWagering) FindByKey(ctx context.Context, providerID, key string) 
 		return nil, fmt.Errorf("injected: %w", persistenceiface.ErrUnavailable)
 	}
 	return r.Repository.FindByKey(ctx, providerID, key)
+}
+
+type faultyChecker struct {
+	inner  healthiface.Checker
+	faults *Faults
+}
+
+func (c *faultyChecker) Name() string { return c.inner.Name() }
+
+func (c *faultyChecker) Check(ctx context.Context) error {
+	if c.faults.isDown(c.inner.Name()) {
+		return errors.New("injected: the dependency is unreachable")
+	}
+	return c.inner.Check(ctx)
 }

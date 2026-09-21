@@ -33,6 +33,7 @@ func (s *service) ResolvePending(ctx context.Context) (found int, err error) {
 // claims it is what keeps two workers from resolving the same reversal, and it is released by the
 // commit or by the death of the worker, so no lease is needed.
 func (s *service) resolveNext(ctx context.Context) (resolved bool, err error) {
+	var claimed *entities.WagerTransaction
 	err = s.uow.Atomic(ctx, func(ctx context.Context) error {
 		tx, err := s.wagering.ClaimDueReference(ctx, s.now())
 		if isNotFound(err) {
@@ -41,9 +42,13 @@ func (s *service) resolveNext(ctx context.Context) (resolved bool, err error) {
 		if err != nil {
 			return err
 		}
-		resolved = true
+		resolved, claimed = true, tx
 		return s.resolveReference(ctx, tx)
 	})
+	if err == nil && claimed != nil {
+		// Counted after the commit, so a resolution that was rolled back is never reported.
+		s.recordResolution(ctx, claimed)
+	}
 	return resolved, err
 }
 

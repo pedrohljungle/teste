@@ -82,6 +82,11 @@ func (h *JobHandler) Handle(ctx context.Context, msg structs.QueueMessage) (err 
 	}
 	// The message id is the correlation id: everything the message causes carries it.
 	ctx = observability.WithCorrelationID(ctx, message.ID)
+	ctx = observability.WithFields(ctx,
+		observability.String("messageId", message.ID),
+		observability.String("providerId", message.Operation.ProviderID),
+		observability.String("walletId", message.Operation.WalletID),
+	)
 
 	_, err = h.service.Receive(ctx, message)
 	return h.settle(ctx, msg, err)
@@ -101,6 +106,8 @@ func (h *JobHandler) settle(ctx context.Context, msg structs.QueueMessage, err e
 			observability.String("reason", err.Error()))
 		return nil
 	default:
+		// Left for redelivery: SQS brings it back after the visibility timeout.
+		h.obs.Count(ctx, "sqs_message_retries_total")
 		return err
 	}
 }
@@ -110,10 +117,25 @@ func (h *JobHandler) settle(ctx context.Context, msg structs.QueueMessage, err e
 // message is not lost: it comes back and is given up on again.
 func (h *JobHandler) giveUp(ctx context.Context, msg structs.QueueMessage, cause error) error {
 	h.obs.Error(ctx, cause, "message cannot be processed, sent to the dead letter queue")
+	h.obs.Count(ctx, "sqs_dead_letters_total", observability.NewTag("reason", deadLetterReason(cause)))
 	if err := h.deadLetter.Send(ctx, msg, cause.Error()); err != nil {
 		return fmt.Errorf("send to the dead letter queue: %w", err)
 	}
 	return nil
+}
+
+// deadLetterReason is the bounded label of why a message was given up on.
+func deadLetterReason(err error) string {
+	switch {
+	case errors.Is(err, errMalformed):
+		return "malformed"
+	case errors.Is(err, wageringiface.ErrMessageConflict):
+		return "message_conflict"
+	case errors.Is(err, wageringiface.ErrIdempotencyConflict):
+		return "idempotency_conflict"
+	default:
+		return "invalid_operation"
+	}
 }
 
 // isPermanent reports the failures a retry cannot fix.

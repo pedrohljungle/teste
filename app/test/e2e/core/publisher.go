@@ -43,6 +43,7 @@ func (s *Stack) StartPublisher(t *testing.T, name string) *Publisher {
 		handlers.Module,
 		cronjob.Module,
 		s.Faults.options(),
+		s.telemetry.options(),
 
 		fx.Invoke(registerCronjobs),
 		fx.Invoke(cronjob.Run),

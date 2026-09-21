@@ -102,7 +102,11 @@ func (s *service) Submit(ctx context.Context, operation entities.ExternalOperati
 		observability.String("providerId", operation.ProviderID),
 		observability.String("walletId", operation.WalletID),
 	)
-	defer func() { end(err) }()
+	started := time.Now()
+	defer func() {
+		end(err)
+		s.record(ctx, sourceHTTP, started, operation.Kind, outcome, err)
+	}()
 
 	candidate, err := entities.NewExternalTransaction(s.newID(), operation, s.now())
 	if err != nil {
@@ -120,6 +124,7 @@ func (s *service) Submit(ctx context.Context, operation entities.ExternalOperati
 	if errors.Is(err, wageringiface.ErrDuplicate) {
 		// Another copy of the operation committed between the lookup and the insert. The
 		// database refused this one, which is exactly its job: resolve it as the replay it is.
+		s.obs.Count(ctx, "wager_concurrent_duplicates_total", observability.NewTag("source", sourceHTTP))
 		existing, found, lookupErr := s.lookup(ctx, candidate)
 		if lookupErr != nil {
 			return structs.WagerOutcome{}, lookupErr
@@ -186,7 +191,11 @@ func (s *service) apply(ctx context.Context, candidate *entities.WagerTransactio
 func (s *service) applyOperation(ctx context.Context, candidate *entities.WagerTransaction, correlationID string) error {
 	// The row lock is what serialises two writers of one wallet: the second waits here, then reads
 	// the balance the first one left. Wallets that are not this one are not touched.
+	lockStarted := time.Now()
 	wallet, err := s.wallets.GetForUpdate(ctx, candidate.WalletID())
+	// How long the lock took is the contention on the wallet: near zero when nobody else is writing
+	// it, and the wait behind the other writers when somebody is.
+	s.obs.Measure(ctx, "wallet_lock_wait_seconds", time.Since(lockStarted))
 	if errors.Is(err, walletiface.ErrNotFound) {
 		return entities.Reject(entities.FailureWalletNotFound, "wallet %s does not exist", candidate.WalletID())
 	}
