@@ -127,10 +127,10 @@ func waitForTransaction(t *testing.T, external string) storedTransaction {
 	return storedTransaction{}
 }
 
-func inboxRows(t *testing.T, messageID string) (rows int, completed bool) {
+func inboxRows(t *testing.T, messageID string) (int, bool) {
 	t.Helper()
 
-	var completedRows int
+	var rows, completedRows int
 	if err := stack.DB(t).QueryRow(context.Background(), `
 		SELECT count(*), count(completed_at) FROM inbox_messages
 		WHERE consumer_name = 'wager-transactions' AND message_id = $1`, messageID).Scan(&rows, &completedRows); err != nil {

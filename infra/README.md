@@ -63,7 +63,6 @@ nomeia um **security group**, nunca um CIDR.
 
 ```
 internet ──80/443──> alb ──3000──> tasks ──5432──> rds
-                                        ──6379──> redis
 ```
 
 ## Comandos úteis

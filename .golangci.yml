@@ -7,7 +7,7 @@
 #                  points at nothing but entities and structs.
 #   handlers       take a request, call a service, answer. No storage, no business rule.
 #   services       the business rules. Talk to the world only through the contracts.
-#   repositories   the adapters: the only packages that know pgx, Redis or an SDK.
+#   repositories   the adapters: the only packages that know pgx or an SDK.
 #   entities       mirror the tables. Leaf: they know no layer.
 #   structs        DTOs that cross layers. Leaf, and data only.
 #   libs/          everything that is not a layer: config, telemetry, pools, IDP, runtimes.
@@ -33,6 +33,9 @@ linters:
     - cyclop
     - bodyclose
     - noctx
+    # No named results: a function declares the types and returns local variables. Spans are opened
+    # with observability.Trace, which is what used to require a named err.
+    - nonamedreturns
 
   settings:
     errorlint:
@@ -71,8 +74,6 @@ linters:
               desc: "A contract is not infrastructure. Nothing from libs/ belongs in a signature here."
             - pkg: "github.com/jackc/pgx"
               desc: "A contract describes the domain, not the driver."
-            - pkg: "github.com/redis/go-redis"
-              desc: "A contract describes the domain, not the cache client."
             - pkg: "github.com/aws/aws-sdk-go-v2"
               desc: "A contract describes the domain, not the SDK."
             - pkg: "github.com/labstack/echo"
@@ -90,8 +91,6 @@ linters:
               desc: "An entity is data, not a connection. The db struct tags are strings."
             - pkg: "database/sql"
               desc: "An entity is data, not a connection."
-            - pkg: "github.com/redis/go-redis"
-              desc: "An entity is data, not a cache."
             - pkg: "github.com/labstack/echo"
               desc: "An entity knows nothing about HTTP."
 
@@ -113,8 +112,6 @@ linters:
               desc: "structs/ is DATA, not infrastructure."
             - pkg: "database/sql"
               desc: "structs/ is DATA, not infrastructure."
-            - pkg: "github.com/redis/go-redis"
-              desc: "structs/ is DATA, not infrastructure."
             - pkg: "github.com/labstack/echo"
               desc: "structs/ crosses layers, and transport belongs to one of them."
 
@@ -127,8 +124,6 @@ linters:
               desc: "A service does not talk to the database. Declare a port here and implement it in repositories/."
             - pkg: "database/sql"
               desc: "A service does not talk to the database."
-            - pkg: "github.com/redis/go-redis"
-              desc: "A service does not talk to the cache. Declare a port (Cache) and implement it in repositories/."
             - pkg: "github.com/aws/aws-sdk-go-v2"
               desc: "A service does not talk to an SDK. The queue is a port (Queue), implemented in repositories/."
             - pkg: "github.com/labstack/echo"
@@ -151,8 +146,6 @@ linters:
               desc: "A handler does not talk to the database. Call the service."
             - pkg: "database/sql"
               desc: "A handler does not talk to the database. Call the service."
-            - pkg: "github.com/redis/go-redis"
-              desc: "A handler does not talk to the cache. Call the service."
             - pkg: "github.com/aws/aws-sdk-go-v2"
               desc: "A handler does not talk to an SDK. Call the service."
             - pkg: "github.com/estrategiahq/pedro-test/app/src/repositories"

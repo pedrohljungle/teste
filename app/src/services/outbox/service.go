@@ -43,19 +43,17 @@ func NewService(repo outboxiface.Repository, publisher outboxiface.Publisher, cf
 	}
 }
 
-func (s *service) PublishDue(ctx context.Context) (found int, err error) {
-	ctx, end := s.obs.Start(ctx, observability.LayerService, "outbox.Service.PublishDue",
-		observability.String("publisher", s.name))
-	defer func() { end(err) }()
-
-	events, err := s.repo.Claim(ctx, s.name, s.cfg.BatchSize, s.cfg.Lease, s.now())
-	if err != nil {
-		return 0, fmt.Errorf("claim due events: %w", err)
-	}
-	for _, event := range events {
-		s.publish(ctx, event)
-	}
-	return len(events), nil
+func (s *service) PublishDue(ctx context.Context) (int, error) {
+	return observability.Trace(ctx, s.obs, observability.LayerService, "outbox.Service.PublishDue", func(ctx context.Context) (int, error) {
+		events, err := s.repo.Claim(ctx, s.name, s.cfg.BatchSize, s.cfg.Lease, s.now())
+		if err != nil {
+			return 0, fmt.Errorf("claim due events: %w", err)
+		}
+		for _, event := range events {
+			s.publish(ctx, event)
+		}
+		return len(events), nil
+	}, observability.String("publisher", s.name))
 }
 
 // publish sends one claimed event and records what came of it. It never returns an error: one

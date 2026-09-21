@@ -20,7 +20,7 @@ de dizer que terminou, os três têm que passar.
 - **GoDoc em todo identificador exportado** — uma frase, começando pelo nome.
 - Fora isso, comente **só fluxo fora do padrão**: a decisão que um leitor competente não
   deduziria do código (por que engolir este erro, por que este contexto não herda
-  cancelamento, por que este `defer` é na forma longa).
+  cancelamento).
 - **Não** narrar o que o código já diz.
 
 ## 3. Camadas
@@ -31,8 +31,8 @@ Três camadas, e só elas, em `app/src/`:
 |---|---|---|
 | `interfaces/` | os **contratos** de cada domínio: o que ele oferece, o que precisa, e os erros | qualquer comportamento |
 | `handlers/` | recebe (HTTP **ou** mensagem de fila), valida a borda, chama o service, responde | regra de negócio, I/O de dado |
-| `services/` | regra de negócio, implementando os contratos | conhecer pgx, redis, echo, SDK, IDP |
-| `repositories/` | adapters de I/O (Postgres, cache, fila) que implementam os contratos | regra de negócio, HTTP |
+| `services/` | regra de negócio, implementando os contratos | conhecer pgx, echo, SDK, IDP |
+| `repositories/` | adapters de I/O (Postgres, fila) que implementam os contratos | regra de negócio, HTTP |
 
 Mais dois pacotes-folha: `entities/` (espelho de tabela) e `structs/` (o que atravessa camada
 — dado, mais a lógica trivial sobre esse dado).
@@ -55,8 +55,8 @@ interfaces/          handlers/            services/            repositories/
     ├── service.go   ├── <dominio>/       └── <dominio>/       ├── <dominio>/
     ├── repository.go│   ├── module.go        ├── module.go    │   ├── module.go
     └── errors.go    │   ├── http.go          ├── service.go   │   └── postgres.go
-                     │   └── job.go           └── *_test.go    ├── cache/
-                     ├── health/                               └── queue/
+                     │   └── job.go           └── *_test.go    └── queue/
+                     ├── health/
                      └── identity/
 ```
 
@@ -70,11 +70,11 @@ de propósito. Criar o primeiro é criar uma pasta em cada camada que ele toca, 
   `task.Service`, `task.HTTPHandler`, `task.PostgresRepository`.
 - Como o nome se repete entre camadas, quem importa mais de um **usa alias**: `tasksvc`,
   `taskrepo`, `taskhandler`.
-- **Não é domínio, mas é da camada**: `repositories/cache/` e `repositories/queue/` (adapters
-  genéricos), `handlers/health` e `handlers/identity` (as duas rotas que todo serviço tem).
+- **Não é domínio, mas é da camada**: `repositories/queue/` (adapter
+  genérico), `handlers/health` e `handlers/identity` (as duas rotas que todo serviço tem).
   Ficam ao lado dos domínios. O que não é de camada nenhuma — middleware — vai para `libs/`.
 - **A amarração porta → adapter é do módulo do domínio.** Quando o adapter é genérico e não
-  pode conhecer o domínio, a amarração sobe para o `module.go` da camada — é o caso do cache.
+  pode conhecer o domínio, a amarração sobe para o `module.go` da camada — é o caso da fila de dead letter.
 
 ### Toda fronteira entre camadas é uma interface
 
@@ -83,7 +83,7 @@ Nenhuma camada depende do tipo concreto da vizinha.
 | Fronteira | Contrato | Declarado em |
 |---|---|---|
 | handler → service | `Service`, `CompletionService` | `interfaces/<dominio>` |
-| service → banco/cache/fila | `Repository`, `CompletionRepository`, `Cache`, `Queue` | `interfaces/<dominio>` |
+| service → banco/fila | `Repository`, `CompletionRepository`, `Queue` | `interfaces/<dominio>` |
 | middleware → IDP | `auth.TokenVerifier` | `libs/auth` |
 | runtime de fila → adapter/handler | `jobrunner.Source`, `jobrunner.Handler` | `libs/jobrunner` |
 
@@ -98,7 +98,9 @@ Regras:
   dois dependem de `interfaces/`.
 - O construtor devolve a **interface** (`func NewService(...) taskiface.Service`); a struct é
   minúscula. **É o `return` do construtor que afirma o contrato em tempo de compilação** — não
-  existe `var _ Iface = (*impl)(nil)` neste repositório.
+  existe `var _ Iface = (*impl)(nil)` neste repositório, nem em linha solta nem em bloco
+  `var ( _ A = ...; _ B = ... )`. Uma struct que atende dois contratos ganha dois construtores,
+  cada um devolvendo o seu (`NewService`, `NewReferenceResolver`).
 - Quando o construtor precisa devolver o concreto (porque o tipo tem ciclo de vida próprio, como
   `auth.Verifier`), quem afirma é a **função de amarração no `module.go`**:
   `fx.Provide(func(v *Verifier) TokenVerifier { return v })`. O mesmo vale para adapter genérico
@@ -136,7 +138,7 @@ Regras:
 | Endpoint novo de um domínio | `handlers/<dominio>/http.go`, registrado no `ServerRoutes` dele |
 | Consumo de um tipo novo de mensagem | `handlers/<dominio>/job.go`, registrado no `PrepareWorker` dele |
 | Regra/decisão de negócio | `services/<dominio>/` |
-| Ler ou gravar em banco, cache, fila, object storage | `repositories/<dominio>/`, implementando uma porta do service |
+| Ler ou gravar em banco, fila, object storage | `repositories/<dominio>/`, implementando uma porta do service |
 | Adapter de I/O genérico, sem domínio | `repositories/<nome>/`, com a amarração no `module.go` da camada |
 | Integração externa que não guarda dado (IDP, pagamento) | um adapter em `libs/`, atrás de uma interface |
 | Client de SDK (SQS, S3) | `libs/awsclients` só constrói; quem usa é `repositories/` |
@@ -196,7 +198,7 @@ func PrepareWorker(runner *jobrunner.Runner, source jobrunner.Source, h *JobHand
 
 ## 6. Fila: SQS
 
-- Fila é **SQS**. Redis fica só com o cache.
+- Fila é **SQS**. Não há cache: Redis foi retirado (ver TO DO no ARCHITECTURE.md).
 - `libs/awsclients` constrói o client; `repositories/<dominio>/queue.go` é o adapter.
 - O trace viaja em **message attributes** (prefixo `otel-`), não dentro do corpo: o corpo é o
   payload do domínio.
@@ -226,15 +228,32 @@ func PrepareWorker(runner *jobrunner.Runner, source jobrunner.Source, h *JobHand
 ## 9. Observabilidade
 
 - Uma superfície só: `libs/observability.Observer`, injetado em **toda** camada.
-- Toda operação abre span com retorno nomeado e `defer` na forma longa:
+- Toda operação abre span com `observability.Trace` (devolve valor e erro) ou `TraceErr` (só
+  erro), que encerram o span com o erro que a função devolveu:
 
   ```go
-  func (s *Service) List(ctx context.Context, page structs.Page) (tasks []entities.Task, err error) {
-      ctx, end := s.obs.Start(ctx, observability.LayerService, "task.Service.List")
-      defer func() { end(err) }()
+  func (s *Service) List(ctx context.Context, page structs.Page) ([]entities.Task, error) {
+      return observability.Trace(ctx, s.obs, observability.LayerService, "task.Service.List",
+          func(ctx context.Context) ([]entities.Task, error) {
+              return s.tasks.List(ctx, page)
+          })
+  }
   ```
 
-  `defer end(err)` (forma curta) avalia `err` ainda `nil` e **não registra nada**.
+  Campos do span vão depois da função (`..., observability.String("walletId", id))`).
+- **Nunca use retorno nomeado**: `(outcome structs.WagerOutcome, err error)` não existe neste
+  repositório. A função declara os tipos (`(structs.WagerOutcome, error)`) e devolve **variáveis
+  locais**. Isso vale para toda função, com span ou sem.
+- Quando a operação precisa fazer algo em volta do span — registrar o resultado, ou encerrar com
+  um erro diferente do devolvido (a leitura que não acha nada não é falha do serviço) —, use
+  `Start` e separe o corpo numa função interna, sem `defer` nem retorno nomeado:
+
+  ```go
+  ctx, end := s.obs.Start(ctx, observability.LayerService, "wagering.Service.Get")
+  tx, err := s.get(ctx, providerID, id)
+  end(expectedMissing(err))
+  return tx, err
+  ```
 - Camadas: `LayerHandler`, `LayerService`, `LayerRepository`, `LayerGateway`.
 - **Engolir erro só via `obs.Error(...)`.**
 - **Nenhuma camada importa `zap` nem o SDK do OpenTelemetry** — só `libs/observability` e
@@ -284,7 +303,7 @@ Duas categorias, e só duas.
 
 **Ponta a ponta** (`make test-e2e`) — em `app/test/e2e/`, com **testcontainers**:
 
-- Sobe Postgres, Redis, LocalStack (SQS) e Keycloak de verdade, aplica as migrações e roda o
+- Sobe Postgres, LocalStack (SQS) e Keycloak de verdade, aplica as migrações e roda o
   servidor e o worker no mesmo processo.
 - Valida **fluxo**, criando entidades: criar task pela API → job no SQS → worker conclui →
   linha no banco. Mais autenticação, papéis, paginação e idempotência de redelivery.
@@ -314,7 +333,7 @@ ninguém linta apodrece.
 - **Sizing vai em `locals.tf`**, indexado pelo workspace — não no `.tfvars`. No `.tfvars` fica
   o que difere por ambiente e não é tamanho (imagem, issuer, certificado, CIDR).
 - **Regra de rede nomeia security group, nunca CIDR**, e mora toda em `security.tf`.
-- **Só o ALB tem rota para a internet.** ECS, RDS e Redis ficam nas subnets privadas.
+- **Só o ALB tem rota para a internet.** ECS e RDS ficam nas subnets privadas.
 - **Segredo não passa pelo Terraform**: senha de banco é gerenciada pelo RDS no Secrets
   Manager e injetada na task como *secret*; o resto entra por ARN.
 - Rodou `terraform fmt -recursive` e `terraform validate` antes de abrir PR.

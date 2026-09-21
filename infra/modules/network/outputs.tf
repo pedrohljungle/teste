@@ -9,7 +9,7 @@ output "public_subnet_ids" {
 }
 
 output "private_subnet_ids" {
-  description = "Subnets that reach the internet only through NAT. Tasks, database and cache belong here."
+  description = "Subnets that reach the internet only through NAT. Tasks and database belong here."
   value       = aws_subnet.private[*].id
 }
 

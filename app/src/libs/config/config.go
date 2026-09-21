@@ -35,7 +35,6 @@ type Config struct {
 	// task definition and the password from Secrets Manager, so neither the plan nor the
 	// Terraform state ever holds a credential.
 	DatabasePassword string
-	RedisURL         string
 	Keycloak         Keycloak
 	Worker           Worker
 	Telemetry        Telemetry
@@ -231,7 +230,6 @@ func Load() (Config, error) {
 		Port:             v.GetString("PORT"),
 		DatabaseURL:      v.GetString("DATABASE_URL"),
 		DatabasePassword: v.GetString("DATABASE_PASSWORD"),
-		RedisURL:         v.GetString("REDIS_URL"),
 		Keycloak: Keycloak{
 			Issuer:       v.GetString("KEYCLOAK_ISSUER"),
 			InternalURL:  v.GetString("KEYCLOAK_INTERNAL_URL"),
@@ -280,10 +278,6 @@ func Load() (Config, error) {
 func (c Config) validate() error {
 	if c.DatabaseURL == "" {
 		return errors.New("DATABASE_URL is required")
-	}
-	// Redis backs the listing cache. The queue lives in SQS.
-	if c.RedisURL == "" {
-		return errors.New("REDIS_URL is required (cache)")
 	}
 	if c.Worker.QueueURL == "" {
 		return errors.New("SQS_QUEUE_URL is required")

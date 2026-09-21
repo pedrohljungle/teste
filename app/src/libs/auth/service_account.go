@@ -33,14 +33,12 @@ func NewServiceAccount(cfg config.Keycloak, obs *observability.Observer) *Servic
 }
 
 // Token returns a valid access token, refreshing it when needed.
-func (s *ServiceAccount) Token(ctx context.Context) (token string, err error) {
-	// The context feeds the span only: oauth2.TokenSource takes no per-call context.
-	_, end := s.obs.Start(ctx, observability.LayerGateway, "Keycloak.ServiceAccountToken")
-	defer func() { end(err) }()
-
-	tok, err := s.source.Token()
-	if err != nil {
-		return "", fmt.Errorf("obtain service account token: %w", err)
-	}
-	return tok.AccessToken, nil
+func (s *ServiceAccount) Token(ctx context.Context) (string, error) {
+	return observability.Trace(ctx, s.obs, observability.LayerGateway, "Keycloak.ServiceAccountToken", func(ctx context.Context) (string, error) {
+		tok, err := s.source.Token()
+		if err != nil {
+			return "", fmt.Errorf("obtain service account token: %w", err)
+		}
+		return tok.AccessToken, nil
+	})
 }

@@ -12,29 +12,30 @@ import (
 )
 
 // ResolvePending looks again for the reference of the reversals that are due, one unit of work each.
-func (s *service) ResolvePending(ctx context.Context) (found int, err error) {
-	ctx, end := s.obs.Start(ctx, observability.LayerService, "wagering.Service.ResolvePending")
-	defer func() { end(err) }()
-
-	for found < s.cfg.BatchSize {
-		resolved, err := s.resolveNext(ctx)
-		if err != nil {
-			return found, err
+func (s *service) ResolvePending(ctx context.Context) (int, error) {
+	return observability.Trace(ctx, s.obs, observability.LayerService, "wagering.Service.ResolvePending", func(ctx context.Context) (int, error) {
+		found := 0
+		for found < s.cfg.BatchSize {
+			resolved, err := s.resolveNext(ctx)
+			if err != nil {
+				return found, err
+			}
+			if !resolved {
+				break
+			}
+			found++
 		}
-		if !resolved {
-			break
-		}
-		found++
-	}
-	return found, nil
+		return found, nil
+	})
 }
 
 // resolveNext claims one due reversal and concludes it, in one unit of work. The row lock that
 // claims it is what keeps two workers from resolving the same reversal, and it is released by the
 // commit or by the death of the worker, so no lease is needed.
-func (s *service) resolveNext(ctx context.Context) (resolved bool, err error) {
+func (s *service) resolveNext(ctx context.Context) (bool, error) {
 	var claimed *entities.WagerTransaction
-	err = s.uow.Atomic(ctx, func(ctx context.Context) error {
+	resolved := false
+	err := s.uow.Atomic(ctx, func(ctx context.Context) error {
 		tx, err := s.wagering.ClaimDueReference(ctx, s.now())
 		if isNotFound(err) {
 			return nil

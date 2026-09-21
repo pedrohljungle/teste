@@ -4,7 +4,7 @@ output "cluster_name" {
 }
 
 output "task_security_group_id" {
-  description = "Security group of the tasks. The database and the cache allow this group and nothing else."
+  description = "Security group of the tasks. The database allows this group and nothing else."
   value       = aws_security_group.tasks.id
 }
 

@@ -72,24 +72,23 @@ type messageBody struct {
 //   - no retry can change the result (malformed, contradicting): send it to the dead
 //     letter queue with the reason, then delete it from this one;
 //   - the storage was unavailable: return the error, and the queue delivers it again.
-func (h *JobHandler) Handle(ctx context.Context, msg structs.QueueMessage) (err error) {
-	ctx, end := h.obs.Start(ctx, observability.LayerHandler, "wagering.JobHandler.Handle")
-	defer func() { end(err) }()
+func (h *JobHandler) Handle(ctx context.Context, msg structs.QueueMessage) error {
+	return observability.TraceErr(ctx, h.obs, observability.LayerHandler, "wagering.JobHandler.Handle", func(ctx context.Context) error {
+		message, err := parse(msg.Payload)
+		if err != nil {
+			return h.giveUp(ctx, msg, err)
+		}
+		// The message id is the correlation id: everything the message causes carries it.
+		ctx = observability.WithCorrelationID(ctx, message.ID)
+		ctx = observability.WithFields(ctx,
+			observability.String("messageId", message.ID),
+			observability.String("providerId", message.Operation.ProviderID),
+			observability.String("walletId", message.Operation.WalletID),
+		)
 
-	message, err := parse(msg.Payload)
-	if err != nil {
-		return h.giveUp(ctx, msg, err)
-	}
-	// The message id is the correlation id: everything the message causes carries it.
-	ctx = observability.WithCorrelationID(ctx, message.ID)
-	ctx = observability.WithFields(ctx,
-		observability.String("messageId", message.ID),
-		observability.String("providerId", message.Operation.ProviderID),
-		observability.String("walletId", message.Operation.WalletID),
-	)
-
-	_, err = h.service.Receive(ctx, message)
-	return h.settle(ctx, msg, err)
+		_, err = h.service.Receive(ctx, message)
+		return h.settle(ctx, msg, err)
+	})
 }
 
 // settle decides the fate of the message from what handling it came to.

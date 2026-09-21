@@ -190,7 +190,7 @@ func (p *WorkerProcess) Send(t *testing.T, groupID, body string) {
 }
 
 // QueueState is how many messages of this process's queue are waiting and how many are in flight.
-func (p *WorkerProcess) QueueState(t *testing.T) (visible, inFlight int) {
+func (p *WorkerProcess) QueueState(t *testing.T) (int, int) {
 	t.Helper()
 
 	out, err := p.stack.sqs(t).GetQueueAttributes(context.Background(), &sqs.GetQueueAttributesInput{
@@ -203,8 +203,8 @@ func (p *WorkerProcess) QueueState(t *testing.T) (visible, inFlight int) {
 	if err != nil {
 		t.Fatalf("read queue attributes: %v", err)
 	}
-	visible, _ = strconv.Atoi(out.Attributes["ApproximateNumberOfMessages"])
-	inFlight, _ = strconv.Atoi(out.Attributes["ApproximateNumberOfMessagesNotVisible"])
+	visible, _ := strconv.Atoi(out.Attributes["ApproximateNumberOfMessages"])
+	inFlight, _ := strconv.Atoi(out.Attributes["ApproximateNumberOfMessagesNotVisible"])
 	return visible, inFlight
 }
 

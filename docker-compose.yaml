@@ -8,7 +8,6 @@ name: pedro-test
 x-app-env: &app-env
   APP_ENV: development
   DATABASE_URL: postgres://postgres:postgres@postgres:5432/pedro_test?sslmode=disable
-  REDIS_URL: redis://redis:6379/0
   # Issuer is the external address, the one inside the token you fetch from your machine.
   # InternalURL is how the container reaches Keycloak. They are different addresses for the
   # same realm, and mixing them up is the usual cause of "issuer mismatch".
@@ -49,8 +48,6 @@ services:
     depends_on:
       migrate:
         condition: service_completed_successfully
-      redis:
-        condition: service_healthy
       localstack:
         condition: service_healthy
       # The server loads the realm metadata during boot, so Keycloak has to be ready.
@@ -82,8 +79,6 @@ services:
     depends_on:
       migrate:
         condition: service_completed_successfully
-      redis:
-        condition: service_healthy
       localstack:
         condition: service_healthy
       keycloak:
@@ -125,17 +120,6 @@ services:
       # postgres:18+ expects a single mount at /var/lib/postgresql, not at the data
       # subdirectory: mounting the old path makes the image refuse to start.
       - pgdata:/var/lib/postgresql
-
-  # Redis backs the listing cache. The job queue lives in SQS.
-  redis:
-    image: redis:8-alpine
-    ports:
-      - "6379:6379"
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 5s
-      timeout: 3s
-      retries: 10
 
   # SQS locally. The init script creates the queue and its dead letter queue, so the
   # application never needs permission to create its own infrastructure.

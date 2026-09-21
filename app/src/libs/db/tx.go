@@ -88,7 +88,7 @@ func (a *Accessor) DoSnapshot(ctx context.Context, fn func(ctx context.Context) 
 	return a.run(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly}, fn)
 }
 
-func (a *Accessor) run(ctx context.Context, options pgx.TxOptions, fn func(ctx context.Context) error) (err error) {
+func (a *Accessor) run(ctx context.Context, options pgx.TxOptions, fn func(ctx context.Context) error) error {
 	if a.InTransaction(ctx) {
 		return fn(ctx)
 	}
@@ -167,7 +167,7 @@ func isTransient(err error) bool {
 // UniqueViolation reports whether err is a unique constraint violation, and which constraint
 // or index it was. The name is what lets a repository turn a generic conflict into the specific
 // sentinel of its contract.
-func UniqueViolation(err error) (constraint string, ok bool) {
+func UniqueViolation(err error) (string, bool) {
 	var pgErr *pgconn.PgError
 	if errors.As(err, &pgErr) && pgErr.Code == pgUniqueViolation {
 		return pgErr.ConstraintName, true

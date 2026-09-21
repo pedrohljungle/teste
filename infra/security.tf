@@ -9,9 +9,8 @@
 # group, which is an explicit act, instead of a /16 nobody re-reads.
 #
 #   internet ──80/443──> alb ──3000──> tasks ──5432──> database
-#                                            ──6379──> cache
 #
-# Nothing points back: neither the database nor the cache can open a connection to anything.
+# Nothing points back: the database cannot open a connection to anything.
 
 resource "aws_vpc_security_group_egress_rule" "alb_to_tasks" {
   security_group_id            = module.alb.security_group_id
@@ -28,14 +27,5 @@ resource "aws_vpc_security_group_ingress_rule" "database_from_tasks" {
   referenced_security_group_id = module.ecs.task_security_group_id
   from_port                    = 5432
   to_port                      = 5432
-  ip_protocol                  = "tcp"
-}
-
-resource "aws_vpc_security_group_ingress_rule" "cache_from_tasks" {
-  security_group_id            = module.cache.security_group_id
-  description                  = "Redis from the application tasks"
-  referenced_security_group_id = module.ecs.task_security_group_id
-  from_port                    = 6379
-  to_port                      = 6379
   ip_protocol                  = "tcp"
 }

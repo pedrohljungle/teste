@@ -46,29 +46,28 @@ func NewService(
 	}
 }
 
-func (s *service) Open(ctx context.Context, playerID uuid.UUID, initialBalance entities.Money) (wallet *entities.Wallet, err error) {
-	ctx, end := s.obs.Start(ctx, observability.LayerService, "wallet.Service.Open")
-	defer func() { end(err) }()
+func (s *service) Open(ctx context.Context, playerID uuid.UUID, initialBalance entities.Money) (*entities.Wallet, error) {
+	return observability.Trace(ctx, s.obs, observability.LayerService, "wallet.Service.Open", func(ctx context.Context) (*entities.Wallet, error) {
+		now := s.now()
+		opening, err := entities.OpenWallet(
+			entities.OpeningIDs{Wallet: s.newID(), Transaction: s.newID(), Entry: s.newID()},
+			playerID, initialBalance, now)
+		if err != nil {
+			return nil, err
+		}
 
-	now := s.now()
-	opening, err := entities.OpenWallet(
-		entities.OpeningIDs{Wallet: s.newID(), Transaction: s.newID(), Entry: s.newID()},
-		playerID, initialBalance, now)
-	if err != nil {
-		return nil, err
-	}
-
-	correlationID := s.correlationID(ctx)
-	// Everything an opening produces lands in one commit. The events are written here, before
-	// it, and never after: an event that outlived a commit that failed would announce a wallet
-	// that does not exist.
-	err = s.uow.Atomic(ctx, func(ctx context.Context) error {
-		return s.store(ctx, opening, correlationID, now)
+		correlationID := s.correlationID(ctx)
+		// Everything an opening produces lands in one commit. The events are written here, before
+		// it, and never after: an event that outlived a commit that failed would announce a wallet
+		// that does not exist.
+		err = s.uow.Atomic(ctx, func(ctx context.Context) error {
+			return s.store(ctx, opening, correlationID, now)
+		})
+		if err != nil {
+			return nil, fmt.Errorf("open wallet: %w", err)
+		}
+		return opening.Wallet, nil
 	})
-	if err != nil {
-		return nil, fmt.Errorf("open wallet: %w", err)
-	}
-	return opening.Wallet, nil
 }
 
 func (s *service) store(ctx context.Context, opening entities.WalletOpening, correlationID string, now time.Time) error {

@@ -18,7 +18,6 @@ const localstackAccountID = "000000000000"
 // point of this suite is to exercise the adapters, which a unit test never does.
 type infra struct {
 	databaseURL string
-	redisURL    string
 	awsEndpoint string
 	queueURL    string
 	dlqURL      string
@@ -46,12 +45,6 @@ func startInfra(ctx context.Context) (*infra, error) {
 	}
 	started = append(started, postgres)
 
-	redis, redisURL, err := startRedis(ctx)
-	if err != nil {
-		return fail(fmt.Errorf("start redis: %w", err))
-	}
-	started = append(started, redis)
-
 	localstack, awsEndpoint, err := startLocalstack(ctx)
 	if err != nil {
 		return fail(fmt.Errorf("start localstack: %w", err))
@@ -66,7 +59,6 @@ func startInfra(ctx context.Context) (*infra, error) {
 
 	return &infra{
 		databaseURL: postgresURL,
-		redisURL:    redisURL,
 		awsEndpoint: awsEndpoint,
 		queueURL:    fmt.Sprintf("%s/%s/wager-transactions.fifo", awsEndpoint, localstackAccountID),
 		dlqURL:      fmt.Sprintf("%s/%s/wager-transactions-dlq.fifo", awsEndpoint, localstackAccountID),
@@ -104,26 +96,6 @@ func startPostgres(ctx context.Context) (testcontainers.Container, string, error
 		return nil, "", err
 	}
 	return container, fmt.Sprintf("postgres://postgres:postgres@%s/pedro_test?sslmode=disable", endpoint), nil
-}
-
-func startRedis(ctx context.Context) (testcontainers.Container, string, error) {
-	container, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
-		Started: true,
-		ContainerRequest: testcontainers.ContainerRequest{
-			Image:        "redis:8-alpine",
-			ExposedPorts: []string{"6379/tcp"},
-			WaitingFor:   wait.ForLog("Ready to accept connections").WithStartupTimeout(time.Minute),
-		},
-	})
-	if err != nil {
-		return nil, "", err
-	}
-
-	endpoint, err := container.PortEndpoint(ctx, "6379/tcp", "")
-	if err != nil {
-		return nil, "", err
-	}
-	return container, fmt.Sprintf("redis://%s/0", endpoint), nil
 }
 
 func startLocalstack(ctx context.Context) (testcontainers.Container, string, error) {

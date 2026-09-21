@@ -15,9 +15,6 @@ locals {
       database_backup_days         = 1
       database_deletion_protection = false
 
-      cache_node_type  = "cache.t4g.micro"
-      cache_node_count = 1
-
       server_cpu      = 256
       server_memory   = 512
       server_replicas = 1
@@ -38,9 +35,6 @@ locals {
       database_multi_az            = true
       database_backup_days         = 14
       database_deletion_protection = true
-
-      cache_node_type  = "cache.t4g.small"
-      cache_node_count = 2
 
       server_cpu      = 512
       server_memory   = 1024

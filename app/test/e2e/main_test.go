@@ -25,7 +25,7 @@ import (
 // people run and one they skip.
 //
 //	Background:
-//	  Given Postgres, Redis, LocalStack and Keycloak running as containers
+//	  Given Postgres, LocalStack and Keycloak running as containers
 //	  And the migrations applied to that database
 //	  And the server and the worker running against them
 //	  And the realm holding the users pedro (app-admin) and joana (no role)

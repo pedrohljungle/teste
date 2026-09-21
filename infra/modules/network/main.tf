@@ -3,7 +3,7 @@
 #
 #   public subnets  -> have a route to the internet gateway. Only the ALB lives here.
 #   private subnets -> route outbound through NAT, and have no inbound route from the internet.
-#                      ECS tasks, RDS and Redis live here.
+#                      ECS tasks and RDS live here.
 
 data "aws_availability_zones" "available" {
   state = "available"
@@ -23,7 +23,7 @@ locals {
 
 resource "aws_vpc" "this" {
   cidr_block = var.vpc_cidr
-  # Both are required for RDS and ElastiCache to be reachable by name from the tasks.
+  # Both are required for RDS to be reachable by name from the tasks.
   enable_dns_support   = true
   enable_dns_hostnames = true
 

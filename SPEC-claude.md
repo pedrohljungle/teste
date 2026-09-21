@@ -724,9 +724,10 @@ O SPEC §15 pede limitações explícitas.
 - **Reversão parcial** — fora do escopo por definição do SPEC §7.
 - **Multi-moeda em operação** — o tipo carrega a moeda e há teste de incompatibilidade, mas os
   cenários principais rodam em BRL, como o SPEC permite.
-- **Redis** — continua no projeto para cache de consulta. **Saldo não é cacheado**: a única
-  fonte é a linha travada no Postgres, e um cache de saldo transformaria a reconciliação numa
-  medida do cache.
+- **Redis / cache** — retirado do projeto por ora. **Saldo não é cacheado** em nenhum cenário:
+  a única fonte é a linha travada no Postgres, e um cache de saldo transformaria a reconciliação
+  numa medida do cache. Cache de leitura e CDN ficam como TO DO em
+  [ARCHITECTURE.md](ARCHITECTURE.md#22-to-do--cache-de-leitura-e-cdn).
 - **Tracing e teste de carga** — diferenciais. O tracing já existe de graça pelo `Observer`;
   teste de carga fica fora.
 
@@ -736,7 +737,7 @@ O SPEC §15 pede limitações explícitas.
 
 Os 13 passos foram entregues, um commit por passo, todos com a definition of done (§3.1)
 verde: `gofmt`, `go vet`, `golangci-lint` (0 issues, duas vezes), testes unitários com `-race`,
-cobertura de `services/` acima de 80% (≈89%) e a suíte e2e com Postgres, Redis, LocalStack e
+cobertura de `services/` acima de 80% (≈89%) e a suíte e2e com Postgres, LocalStack e
 Keycloak reais. Nenhum PR foi aberto e nenhum repositório remoto foi criado; o histórico é local.
 
 O que mudou em relação ao plano, e por quê:

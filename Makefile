@@ -27,7 +27,7 @@ verify: ## Run the whole definition of done (needs Docker for the e2e suite)
 test: ## Run the unit tests with the race detector
 	go test -race -failfast -timeout=120s ./...
 
-# The end to end suite starts Postgres, Redis, LocalStack and Keycloak with testcontainers, so
+# The end to end suite starts Postgres, LocalStack and Keycloak with testcontainers, so
 # it is behind a build tag: `make test` stays fast and needs no Docker.
 #
 # Colima does not publish /var/run/docker.sock, so DOCKER_HOST has to name its socket; Ryuk

@@ -1,5 +1,5 @@
 // Package db opens the connections to the data services and hands their lifecycle to fx.
-// Only connections live here: queries and cache keys belong to repositories.
+// Only connections live here: queries belong to repositories.
 package db
 
 import "go.uber.org/fx"
@@ -8,7 +8,6 @@ import "go.uber.org/fx"
 var Module = fx.Module("db",
 	fx.Provide(
 		NewPostgres,
-		NewRedis,
 		NewAccessor,
 	),
 )

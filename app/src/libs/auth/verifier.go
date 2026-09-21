@@ -141,38 +141,37 @@ func (v *Verifier) checkKeys(ctx context.Context) error {
 }
 
 // Verify returns the Principal carried by the token.
-func (v *Verifier) Verify(ctx context.Context, rawToken string) (principal structs.Principal, err error) {
-	ctx, end := v.obs.Start(ctx, observability.LayerGateway, "Keycloak.Verify")
-	defer func() { end(err) }()
+func (v *Verifier) Verify(ctx context.Context, rawToken string) (structs.Principal, error) {
+	return observability.Trace(ctx, v.obs, observability.LayerGateway, "Keycloak.Verify", func(ctx context.Context) (structs.Principal, error) {
+		v.mu.RLock()
+		verifier := v.verifier
+		v.mu.RUnlock()
+		if verifier == nil {
+			return structs.Principal{}, ErrVerifierNotReady
+		}
 
-	v.mu.RLock()
-	verifier := v.verifier
-	v.mu.RUnlock()
-	if verifier == nil {
-		return structs.Principal{}, ErrVerifierNotReady
-	}
+		token, err := verifier.Verify(ctx, rawToken)
+		if err != nil {
+			// Wrapped into a sentinel so the middleware answers 401 with errors.Is instead of
+			// matching error strings. The original cause stays in the log.
+			return structs.Principal{}, fmt.Errorf("%w: %w", ErrInvalidToken, err)
+		}
 
-	token, err := verifier.Verify(ctx, rawToken)
-	if err != nil {
-		// Wrapped into a sentinel so the middleware answers 401 with errors.Is instead of
-		// matching error strings. The original cause stays in the log.
-		return structs.Principal{}, fmt.Errorf("%w: %w", ErrInvalidToken, err)
-	}
+		var claims keycloakClaims
+		if err := token.Claims(&claims); err != nil {
+			return structs.Principal{}, fmt.Errorf("read token claims: %w", err)
+		}
 
-	var claims keycloakClaims
-	if err := token.Claims(&claims); err != nil {
-		return structs.Principal{}, fmt.Errorf("read token claims: %w", err)
-	}
-
-	return structs.Principal{
-		Subject:  token.Subject,
-		Username: claims.Username,
-		Email:    claims.Email,
-		Roles:    claims.roles(),
-		// A token without the claim leaves this empty, which is what an internal service or a
-		// person looks like: none of them acts for a provider.
-		ProviderID: claims.ProviderID,
-	}, nil
+		return structs.Principal{
+			Subject:  token.Subject,
+			Username: claims.Username,
+			Email:    claims.Email,
+			Roles:    claims.roles(),
+			// A token without the claim leaves this empty, which is what an internal service or a
+			// person looks like: none of them acts for a provider.
+			ProviderID: claims.ProviderID,
+		}, nil
+	})
 }
 
 // keycloakClaims mirrors how Keycloak lays out an access token. It is adapter-shaped on

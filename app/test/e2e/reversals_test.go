@@ -51,9 +51,11 @@ func rejected(t *testing.T, body submitBody) transactionResponse {
 	return core.Decode[transactionResponse](t, core.KeepStatus(t, submit(t, body), http.StatusUnprocessableEntity))
 }
 
-func lastEntry(t *testing.T, walletID string) (direction string, amount, before, after int64) {
+func lastEntry(t *testing.T, walletID string) (string, int64, int64, int64) {
 	t.Helper()
 
+	var direction string
+	var amount, before, after int64
 	if err := stack.DB(t).QueryRow(context.Background(), `
 		SELECT direction, amount_minor, balance_before_minor, balance_after_minor
 		FROM wallet_ledger_entries WHERE wallet_id = $1 ORDER BY seq DESC LIMIT 1`, walletID).

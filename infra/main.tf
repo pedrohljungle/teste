@@ -38,17 +38,6 @@ module "database" {
   deletion_protection = local.config.database_deletion_protection
 }
 
-module "cache" {
-  source = "./modules/cache"
-
-  name               = local.name
-  vpc_id             = module.network.vpc_id
-  private_subnet_ids = module.network.private_subnet_ids
-  node_type          = local.config.cache_node_type
-  node_count         = local.config.cache_node_count
-  apply_immediately  = local.environment != "prod"
-}
-
 module "ecs" {
   source = "./modules/ecs"
 
@@ -76,8 +65,6 @@ module "ecs" {
   # resolves DATABASE_PASSWORD from Secrets Manager at start.
   database_url        = "postgres://${module.database.master_username}@${module.database.address}:5432/${module.database.database_name}?sslmode=require"
   database_secret_arn = module.database.master_secret_arn
-
-  redis_url = module.cache.url
 
   queue_url                = module.queue.queue_url
   queue_arn                = module.queue.queue_arn

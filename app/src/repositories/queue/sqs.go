@@ -50,27 +50,24 @@ func (q *SQS) Name() string { return q.cfg.Name() }
 // The queue is FIFO, so it needs a group and a deduplication id: one group for everything, since
 // nothing reads it in order, and the hash of the payload, so the same poison message sent twice is
 // kept once.
-func (q *SQS) Send(ctx context.Context, msg structs.QueueMessage, reason string) (err error) {
-	ctx, end := q.obs.Start(ctx, observability.LayerRepository, "queue.DeadLetter",
-		observability.String("queue", q.cfg.Name()),
-	)
-	defer func() { end(err) }()
-
-	sum := sha256.Sum256(msg.Payload)
-	_, err = q.client.SendMessage(ctx, &sqs.SendMessageInput{
-		QueueUrl:               awssdk.String(q.cfg.DeadLetterURL),
-		MessageBody:            awssdk.String(string(msg.Payload)),
-		MessageGroupId:         awssdk.String("dead-letter"),
-		MessageDeduplicationId: awssdk.String(hex.EncodeToString(sum[:])),
-		MessageAttributes: map[string]types.MessageAttributeValue{
-			"failureReason": stringAttribute(truncate(reason, maxReasonLength)),
-			"sourceQueue":   stringAttribute(q.cfg.Name()),
-		},
-	})
-	if err != nil {
-		return fmt.Errorf("send to the dead letter queue: %w", err)
-	}
-	return nil
+func (q *SQS) Send(ctx context.Context, msg structs.QueueMessage, reason string) error {
+	return observability.TraceErr(ctx, q.obs, observability.LayerRepository, "queue.DeadLetter", func(ctx context.Context) error {
+		sum := sha256.Sum256(msg.Payload)
+		_, err := q.client.SendMessage(ctx, &sqs.SendMessageInput{
+			QueueUrl:               awssdk.String(q.cfg.DeadLetterURL),
+			MessageBody:            awssdk.String(string(msg.Payload)),
+			MessageGroupId:         awssdk.String("dead-letter"),
+			MessageDeduplicationId: awssdk.String(hex.EncodeToString(sum[:])),
+			MessageAttributes: map[string]types.MessageAttributeValue{
+				"failureReason": stringAttribute(truncate(reason, maxReasonLength)),
+				"sourceQueue":   stringAttribute(q.cfg.Name()),
+			},
+		})
+		if err != nil {
+			return fmt.Errorf("send to the dead letter queue: %w", err)
+		}
+		return nil
+	}, observability.String("queue", q.cfg.Name()))
 }
 
 func stringAttribute(value string) types.MessageAttributeValue {

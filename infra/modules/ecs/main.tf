@@ -170,7 +170,6 @@ locals {
     { name = "APP_ENV", value = var.environment },
     { name = "PORT", value = tostring(var.container_port) },
     { name = "DATABASE_URL", value = var.database_url },
-    { name = "REDIS_URL", value = var.redis_url },
     { name = "KEYCLOAK_ISSUER", value = var.keycloak_issuer },
     { name = "KEYCLOAK_AUDIENCE", value = var.keycloak_audience },
     { name = "AWS_REGION", value = var.region },

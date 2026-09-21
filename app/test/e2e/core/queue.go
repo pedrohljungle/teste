@@ -33,7 +33,7 @@ func (s *Stack) PublishMessage(t *testing.T, groupID, deduplicationID, body stri
 }
 
 // QueueState is how many messages are waiting and how many are being processed.
-func (s *Stack) QueueState(t *testing.T) (visible, inFlight int) {
+func (s *Stack) QueueState(t *testing.T) (int, int) {
 	t.Helper()
 
 	out, err := s.sqs(t).GetQueueAttributes(context.Background(), &sqs.GetQueueAttributesInput{
@@ -46,8 +46,8 @@ func (s *Stack) QueueState(t *testing.T) (visible, inFlight int) {
 	if err != nil {
 		t.Fatalf("read queue attributes: %v", err)
 	}
-	visible, _ = strconv.Atoi(out.Attributes["ApproximateNumberOfMessages"])
-	inFlight, _ = strconv.Atoi(out.Attributes["ApproximateNumberOfMessagesNotVisible"])
+	visible, _ := strconv.Atoi(out.Attributes["ApproximateNumberOfMessages"])
+	inFlight, _ := strconv.Atoi(out.Attributes["ApproximateNumberOfMessagesNotVisible"])
 	return visible, inFlight
 }
 

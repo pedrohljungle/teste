@@ -13,43 +13,42 @@ import (
 	"github.com/estrategiahq/pedro-test/app/src/structs"
 )
 
-func (s *service) Reconcile(ctx context.Context, walletID uuid.UUID) (result structs.Reconciliation, err error) {
-	ctx, end := s.obs.Start(ctx, observability.LayerService, "wallet.Service.Reconcile",
-		observability.String("walletId", walletID.String()))
-	defer func() { end(err) }()
-
-	// The stored balance and the sum of the ledger are read in one snapshot. Read one after the
-	// other, a movement that commits between them would make a healthy wallet look divergent, and
-	// the report would be as wrong as the thing it is checking.
-	err = s.uow.Snapshot(ctx, func(ctx context.Context) error {
-		wallet, err := s.wallets.Get(ctx, walletID)
-		if err != nil {
+func (s *service) Reconcile(ctx context.Context, walletID uuid.UUID) (structs.Reconciliation, error) {
+	return observability.Trace(ctx, s.obs, observability.LayerService, "wallet.Service.Reconcile", func(ctx context.Context) (structs.Reconciliation, error) {
+		// The stored balance and the sum of the ledger are read in one snapshot. Read one after the
+		// other, a movement that commits between them would make a healthy wallet look divergent, and
+		// the report would be as wrong as the thing it is checking.
+		var result structs.Reconciliation
+		err := s.uow.Snapshot(ctx, func(ctx context.Context) error {
+			wallet, err := s.wallets.Get(ctx, walletID)
+			if err != nil {
+				return err
+			}
+			totals, err := s.wallets.SumEntries(ctx, walletID)
+			if err != nil {
+				return err
+			}
+			result, err = reconcile(wallet, totals)
 			return err
-		}
-		totals, err := s.wallets.SumEntries(ctx, walletID)
+		})
 		if err != nil {
-			return err
+			return structs.Reconciliation{}, err
 		}
-		result, err = reconcile(wallet, totals)
-		return err
-	})
-	if err != nil {
-		return structs.Reconciliation{}, err
-	}
 
-	s.obs.Count(ctx, "reconciliations_total", observability.NewTag("consistent", strconv.FormatBool(result.Consistent)))
-	if !result.Consistent {
-		s.obs.Count(ctx, "reconciliation_divergences_total")
-		// Reported and never corrected: a balance that disagrees with its ledger is a fact for a
-		// person to investigate, and rewriting it here would destroy the evidence.
-		s.obs.Error(ctx, fmt.Errorf("%w: stored %s, rebuilt from the ledger %s, difference %s",
-			walletiface.ErrBalanceDivergence, result.StoredBalance, result.CalculatedBalance, result.Difference),
-			"wallet balance diverges from its ledger",
-			observability.String("walletId", result.WalletID),
-			observability.Int("checkedEntries", result.CheckedEntries),
-		)
-	}
-	return result, nil
+		s.obs.Count(ctx, "reconciliations_total", observability.NewTag("consistent", strconv.FormatBool(result.Consistent)))
+		if !result.Consistent {
+			s.obs.Count(ctx, "reconciliation_divergences_total")
+			// Reported and never corrected: a balance that disagrees with its ledger is a fact for a
+			// person to investigate, and rewriting it here would destroy the evidence.
+			s.obs.Error(ctx, fmt.Errorf("%w: stored %s, rebuilt from the ledger %s, difference %s",
+				walletiface.ErrBalanceDivergence, result.StoredBalance, result.CalculatedBalance, result.Difference),
+				"wallet balance diverges from its ledger",
+				observability.String("walletId", result.WalletID),
+				observability.Int("checkedEntries", result.CheckedEntries),
+			)
+		}
+		return result, nil
+	}, observability.String("walletId", walletID.String()))
 }
 
 // reconcile rebuilds the balance from the totals of the ledger and compares it with the wallet.

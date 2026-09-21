@@ -121,12 +121,9 @@ func (r *Runner) loop(ctx context.Context, task Task) {
 // tick runs the task once. Its context does not inherit the cancellation of the schedule: a tick
 // that already started has to finish, because it may be in the middle of a commit, and OnStop is
 // what waits for it.
-func (r *Runner) tick(task Task) (handled int, err error) {
+func (r *Runner) tick(task Task) (int, error) {
 	ctx := observability.WithErrorTrail(context.Background())
-	ctx, end := r.obs.Start(ctx, observability.LayerHandler, "cronjob."+task.Name())
-	defer func() { end(err) }()
-
-	return task.Run(ctx)
+	return observability.Trace(ctx, r.obs, observability.LayerHandler, "cronjob."+task.Name(), task.Run)
 }
 
 func errorBackoff(interval time.Duration, failures int) time.Duration {

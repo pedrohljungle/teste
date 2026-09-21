@@ -23,17 +23,19 @@ const consumerName = "wager-transactions"
 // the operation does and the completion of the handling are one commit. That is what makes
 // deleting the message from the queue safe afterwards, and a crash before the deletion harmless:
 // the message comes back, the inbox already holds it, and nothing is done twice.
-func (s *service) Receive(ctx context.Context, message structs.WagerMessage) (outcome structs.WagerOutcome, err error) {
+func (s *service) Receive(ctx context.Context, message structs.WagerMessage) (structs.WagerOutcome, error) {
 	ctx, end := s.obs.Start(ctx, observability.LayerService, "wagering.Service.Receive",
 		observability.String("messageId", message.ID),
 		observability.String("providerId", message.Operation.ProviderID),
 	)
 	started := time.Now()
-	defer func() {
-		end(err)
-		s.record(ctx, sourceSQS, started, message.Operation.Kind, outcome, err)
-	}()
+	outcome, err := s.receiveMessage(ctx, message)
+	end(err)
+	s.record(ctx, sourceSQS, started, message.Operation.Kind, outcome, err)
+	return outcome, err
+}
 
+func (s *service) receiveMessage(ctx context.Context, message structs.WagerMessage) (structs.WagerOutcome, error) {
 	correlationID := s.correlationID(ctx)
 
 	// Every attempt builds its own transaction and record: an attempt that applied the operation in
@@ -50,7 +52,7 @@ func (s *service) Receive(ctx context.Context, message structs.WagerMessage) (ou
 		return s.receive(ctx, candidate, record, correlationID)
 	}
 
-	outcome, err = attempt()
+	outcome, err := attempt()
 	if errors.Is(err, wageringiface.ErrDuplicate) {
 		s.obs.Count(ctx, "wager_concurrent_duplicates_total", observability.NewTag("source", sourceSQS))
 		// The same operation arrived under another message id at the same moment and won the race
@@ -63,8 +65,9 @@ func (s *service) Receive(ctx context.Context, message structs.WagerMessage) (ou
 }
 
 // receive is one attempt at handling the message, in one unit of work.
-func (s *service) receive(ctx context.Context, candidate *entities.WagerTransaction, record *entities.InboxMessage, correlationID string) (outcome structs.WagerOutcome, err error) {
-	err = s.uow.Atomic(ctx, func(ctx context.Context) error {
+func (s *service) receive(ctx context.Context, candidate *entities.WagerTransaction, record *entities.InboxMessage, correlationID string) (structs.WagerOutcome, error) {
+	var outcome structs.WagerOutcome
+	err := s.uow.Atomic(ctx, func(ctx context.Context) error {
 		inserted, err := s.inbox.Insert(ctx, record)
 		if err != nil {
 			return err
@@ -75,10 +78,11 @@ func (s *service) receive(ctx context.Context, candidate *entities.WagerTransact
 			return err
 		}
 
-		outcome, err = s.handle(ctx, candidate, correlationID)
+		handled, err := s.handle(ctx, candidate, correlationID)
 		if err != nil {
 			return err
 		}
+		outcome = handled
 		if err := record.Complete(s.now()); err != nil {
 			return err
 		}

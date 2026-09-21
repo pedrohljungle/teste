@@ -23,7 +23,7 @@ func EncodeCursor(afterSeq int64) string {
 }
 
 // DecodeCursor reads a token made by EncodeCursor. An empty token is the start of the list.
-func DecodeCursor(token string) (afterSeq int64, err error) {
+func DecodeCursor(token string) (int64, error) {
 	if token == "" {
 		return 0, nil
 	}
@@ -35,7 +35,7 @@ func DecodeCursor(token string) (afterSeq int64, err error) {
 	if !found || version != cursorVersion {
 		return 0, fmt.Errorf("%w: unknown version", ErrInvalidCursor)
 	}
-	afterSeq, err = strconv.ParseInt(position, 10, 64)
+	afterSeq, err := strconv.ParseInt(position, 10, 64)
 	if err != nil || afterSeq < 0 {
 		return 0, fmt.Errorf("%w: bad position", ErrInvalidCursor)
 	}

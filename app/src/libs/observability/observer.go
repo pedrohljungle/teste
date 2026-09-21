@@ -126,14 +126,14 @@ func (o *Observer) Zap() *zap.Logger { return o.log }
 
 // Start opens a span for the given layer and returns the child context and a closer.
 //
-// The closer must receive the operation error, which requires a named return and the long
-// defer form:
+// The closer must receive the operation error. Prefer Trace and TraceErr, which do that for the
+// caller: calling Start directly is for the operations that have something to do around the span
+// itself, and it is done without named results:
 //
-//	func (s *TaskService) List(ctx context.Context) (tasks []entities.Task, err error) {
-//	    ctx, end := s.obs.Start(ctx, observability.LayerService, "TaskService.List")
-//	    defer func() { end(err) }()
-//
-// The short form, defer end(err), evaluates err while it is still nil.
+//	ctx, end := o.Start(ctx, observability.LayerService, "task.Service.List")
+//	tasks, err := s.list(ctx)
+//	end(err)
+//	return tasks, err
 func (o *Observer) Start(ctx context.Context, layer Layer, operation string, fields ...Field) (context.Context, func(error)) {
 	// What the operation knows about itself, such as the wallet or the message it works on, goes into
 	// the context, so every line logged below it names what it is about.
@@ -182,7 +182,7 @@ func (o *Observer) recordFailure(ctx context.Context, layer Layer, operation str
 	o.log.With(o.correlation(ctx)...).Error(operation+" failed", all...)
 }
 
-// Error reports an error that is deliberately not propagated, such as a degraded cache. It is
+// Error reports an error that is deliberately not propagated, such as a best-effort call that failed. It is
 // the only sanctioned way to swallow an error.
 func (o *Observer) Error(ctx context.Context, err error, msg string, fields ...Field) {
 	if span := trace.SpanFromContext(ctx); span.IsRecording() {
@@ -285,3 +285,41 @@ func shouldLog(ctx context.Context, err error) bool {
 	trail.logged = append(trail.logged, err)
 	return true
 }
+
+// Trace runs fn inside a span and ends the span with the error fn returned, so the operation needs
+// neither named results nor a deferred closer:
+//
+//	func (s *service) Get(ctx context.Context, id uuid.UUID) (*entities.Wallet, error) {
+//	    return observability.Trace(ctx, s.obs, observability.LayerService, "wallet.Service.Get",
+//	        func(ctx context.Context) (*entities.Wallet, error) {
+//	            return s.wallets.Get(ctx, id)
+//	        })
+//	}
+//
+// The context fn receives carries the span. A panic is not recovered here: the span is ended as
+// failed, and the panic goes on to the recover middleware.
+func Trace[T any](ctx context.Context, o *Observer, layer Layer, operation string, fn func(context.Context) (T, error), fields ...Field) (T, error) {
+	ctx, end := o.Start(ctx, layer, operation, fields...)
+	returned := false
+	defer func() {
+		if !returned {
+			end(errPanicked)
+		}
+	}()
+
+	value, err := fn(ctx)
+	returned = true
+	end(err)
+	return value, err
+}
+
+// TraceErr is Trace for an operation that returns only an error.
+func TraceErr(ctx context.Context, o *Observer, layer Layer, operation string, fn func(context.Context) error, fields ...Field) error {
+	_, err := Trace(ctx, o, layer, operation, func(ctx context.Context) (struct{}, error) {
+		return struct{}{}, fn(ctx)
+	}, fields...)
+	return err
+}
+
+// errPanicked is what a span records when the operation panicked instead of returning.
+var errPanicked = errors.New("operation panicked")

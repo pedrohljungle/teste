@@ -35,34 +35,31 @@ func NewSQSPublisher(client *sqs.Client, cfg config.Events, obs *observability.O
 	return &sqsPublisher{client: client, cfg: cfg, obs: obs}
 }
 
-func (p *sqsPublisher) Publish(ctx context.Context, event *entities.OutboxEvent) (err error) {
-	ctx, end := p.obs.Start(ctx, observability.LayerRepository, "outbox.Publisher.Publish",
-		observability.String("queue", p.cfg.Name()),
+func (p *sqsPublisher) Publish(ctx context.Context, event *entities.OutboxEvent) error {
+	return observability.TraceErr(ctx, p.obs, observability.LayerRepository, "outbox.Publisher.Publish", func(ctx context.Context) error {
+		attributes := map[string]types.MessageAttributeValue{
+			"eventType":     stringAttribute(string(event.Type())),
+			"eventId":       stringAttribute(event.ID().String()),
+			"correlationId": stringAttribute(event.CorrelationID()),
+		}
+		for key, value := range observability.InjectTrace(ctx) {
+			attributes[traceAttributePrefix+key] = stringAttribute(value)
+		}
+
+		_, err := p.client.SendMessage(ctx, &sqs.SendMessageInput{
+			QueueUrl:               awssdk.String(p.cfg.QueueURL),
+			MessageBody:            awssdk.String(string(event.Payload())),
+			MessageGroupId:         awssdk.String(event.AggregateID().String()),
+			MessageDeduplicationId: awssdk.String(event.ID().String()),
+			MessageAttributes:      attributes,
+		})
+		if err != nil {
+			return fmt.Errorf("publish event %s: %w", event.ID(), err)
+		}
+		return nil
+	}, observability.String("queue", p.cfg.Name()),
 		observability.String("eventId", event.ID().String()),
-		observability.String("eventType", string(event.Type())),
-	)
-	defer func() { end(err) }()
-
-	attributes := map[string]types.MessageAttributeValue{
-		"eventType":     stringAttribute(string(event.Type())),
-		"eventId":       stringAttribute(event.ID().String()),
-		"correlationId": stringAttribute(event.CorrelationID()),
-	}
-	for key, value := range observability.InjectTrace(ctx) {
-		attributes[traceAttributePrefix+key] = stringAttribute(value)
-	}
-
-	_, err = p.client.SendMessage(ctx, &sqs.SendMessageInput{
-		QueueUrl:               awssdk.String(p.cfg.QueueURL),
-		MessageBody:            awssdk.String(string(event.Payload())),
-		MessageGroupId:         awssdk.String(event.AggregateID().String()),
-		MessageDeduplicationId: awssdk.String(event.ID().String()),
-		MessageAttributes:      attributes,
-	})
-	if err != nil {
-		return fmt.Errorf("publish event %s: %w", event.ID(), err)
-	}
-	return nil
+		observability.String("eventType", string(event.Type())))
 }
 
 func stringAttribute(value string) types.MessageAttributeValue {

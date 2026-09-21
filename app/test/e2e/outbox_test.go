@@ -399,7 +399,7 @@ func TestTheOutboxPayloadIsAnImmutableSnapshot(t *testing.T) {
 	w := newWallet(t, "1000.00")
 	bet := core.Decode[transactionResponse](t, core.KeepStatus(t, submit(t, w.operation("BET", "25.00")), http.StatusOK))
 
-	read := func() (after string, version int64) {
+	read := func() (string, int64) {
 		var payload []byte
 		if err := stack.DB(t).QueryRow(context.Background(), `
 			SELECT payload FROM outbox_events

@@ -19,11 +19,6 @@ import (
 	"github.com/estrategiahq/pedro-test/app/src/structs"
 )
 
-var (
-	_ wageringiface.Service           = (*service)(nil)
-	_ wageringiface.ReferenceResolver = (*service)(nil)
-)
-
 type service struct {
 	uow      persistenceiface.UnitOfWork
 	wallets  walletiface.Repository
@@ -97,17 +92,19 @@ func newService(
 // first is a shortcut that spares a repeat from taking the wallet lock. What makes it safe when
 // two copies arrive together is the unique indexes on the transaction: both pass the lookup, one
 // wins the insert, and the other is refused by the database and resolves as a replay.
-func (s *service) Submit(ctx context.Context, operation entities.ExternalOperation) (outcome structs.WagerOutcome, err error) {
+func (s *service) Submit(ctx context.Context, operation entities.ExternalOperation) (structs.WagerOutcome, error) {
 	ctx, end := s.obs.Start(ctx, observability.LayerService, "wagering.Service.Submit",
 		observability.String("providerId", operation.ProviderID),
 		observability.String("walletId", operation.WalletID),
 	)
 	started := time.Now()
-	defer func() {
-		end(err)
-		s.record(ctx, sourceHTTP, started, operation.Kind, outcome, err)
-	}()
+	outcome, err := s.submit(ctx, operation)
+	end(err)
+	s.record(ctx, sourceHTTP, started, operation.Kind, outcome, err)
+	return outcome, err
+}
 
+func (s *service) submit(ctx context.Context, operation entities.ExternalOperation) (structs.WagerOutcome, error) {
 	candidate, err := entities.NewExternalTransaction(s.newID(), operation, s.now())
 	if err != nil {
 		return structs.WagerOutcome{}, err

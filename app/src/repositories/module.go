@@ -1,4 +1,4 @@
-// Package repositories holds the I/O adapters. Every conversation with Postgres, the cache and
+// Package repositories holds the I/O adapters. Every conversation with Postgres and
 // the queue lives here, behind a contract declared in interfaces/<domain>.
 package repositories
 
@@ -6,7 +6,6 @@ import (
 	"go.uber.org/fx"
 
 	wageringiface "github.com/estrategiahq/pedro-test/app/src/interfaces/wagering"
-	"github.com/estrategiahq/pedro-test/app/src/repositories/cache"
 	"github.com/estrategiahq/pedro-test/app/src/repositories/health"
 	"github.com/estrategiahq/pedro-test/app/src/repositories/inbox"
 	"github.com/estrategiahq/pedro-test/app/src/repositories/outbox"
@@ -18,13 +17,12 @@ import (
 
 // Module wires every adapter of this layer.
 //
-// cache, queue and persistence are domain-agnostic: a key-value cache, an SQS queue and the unit
-// of work every domain shares. A domain adapter goes in repositories/<domain>/ with its own
+// queue and persistence are domain-agnostic: an SQS queue and the unit of work every domain
+// shares. A domain adapter goes in repositories/<domain>/ with its own
 // module, and binds itself to the contracts in interfaces/<domain>. When a shared adapter has
 // to satisfy a domain contract, the binding goes here — making a shared adapter import a domain
 // would tie it to the first one that happened to use it.
 var Module = fx.Module("repositories",
-	cache.Module,
 	queue.Module,
 	persistence.Module,
 	wallet.Module,

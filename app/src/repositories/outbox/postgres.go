@@ -33,26 +33,25 @@ func NewPostgresRepository(accessor *db.Accessor, obs *observability.Observer) o
 	return &postgresRepository{db: accessor, obs: obs}
 }
 
-func (r *postgresRepository) Insert(ctx context.Context, event *entities.OutboxEvent) (err error) {
-	ctx, end := r.obs.Start(ctx, observability.LayerRepository, "outbox.Repository.Insert")
-	defer func() { end(err) }()
-
-	// An event outside a transaction could outlive the change it describes, which is exactly
-	// the publication before commit that the outbox exists to prevent.
-	if err := r.db.RequireTransaction(ctx); err != nil {
-		return err
-	}
-	s := event.Snapshot()
-	_, err = r.db.Q(ctx).Exec(ctx,
-		`INSERT INTO outbox_events (`+outboxColumns+`)
+func (r *postgresRepository) Insert(ctx context.Context, event *entities.OutboxEvent) error {
+	return observability.TraceErr(ctx, r.obs, observability.LayerRepository, "outbox.Repository.Insert", func(ctx context.Context) error {
+		// An event outside a transaction could outlive the change it describes, which is exactly
+		// the publication before commit that the outbox exists to prevent.
+		if err := r.db.RequireTransaction(ctx); err != nil {
+			return err
+		}
+		s := event.Snapshot()
+		_, err := r.db.Q(ctx).Exec(ctx,
+			`INSERT INTO outbox_events (`+outboxColumns+`)
 		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
-		s.EventID, s.AggregateType, s.AggregateID, s.EventType, s.EventVersion, s.CorrelationID,
-		s.CausationID, s.Payload, s.OccurredAt, s.Status, s.Attempts, s.NextAttemptAt,
-		s.LockedBy, s.LockedAt, s.PublishedAt)
-	if err != nil {
-		return fmt.Errorf("insert outbox event: %w", db.Classify(err))
-	}
-	return nil
+			s.EventID, s.AggregateType, s.AggregateID, s.EventType, s.EventVersion, s.CorrelationID,
+			s.CausationID, s.Payload, s.OccurredAt, s.Status, s.Attempts, s.NextAttemptAt,
+			s.LockedBy, s.LockedAt, s.PublishedAt)
+		if err != nil {
+			return fmt.Errorf("insert outbox event: %w", db.Classify(err))
+		}
+		return nil
+	})
 }
 
 // Claim is one UPDATE that picks its rows with SKIP LOCKED, which is what lets any number of
@@ -69,12 +68,10 @@ func (r *postgresRepository) Insert(ctx context.Context, event *entities.OutboxE
 // It commits on its own, before anything is published. The network call that follows must not
 // hold a transaction open, and a publisher that dies right after this statement leaves rows that
 // come back when the lease expires.
-func (r *postgresRepository) Claim(ctx context.Context, publisher string, limit int, lease time.Duration, now time.Time) (events []*entities.OutboxEvent, err error) {
-	ctx, end := r.obs.Start(ctx, observability.LayerRepository, "outbox.Repository.Claim")
-	defer func() { end(err) }()
-
-	rows, err := r.db.Q(ctx).Query(ctx,
-		`UPDATE outbox_events SET locked_by = $1, locked_at = $2, attempts = attempts + 1
+func (r *postgresRepository) Claim(ctx context.Context, publisher string, limit int, lease time.Duration, now time.Time) ([]*entities.OutboxEvent, error) {
+	return observability.Trace(ctx, r.obs, observability.LayerRepository, "outbox.Repository.Claim", func(ctx context.Context) ([]*entities.OutboxEvent, error) {
+		rows, err := r.db.Q(ctx).Query(ctx,
+			`UPDATE outbox_events SET locked_by = $1, locked_at = $2, attempts = attempts + 1
 		 WHERE event_id IN (
 		     SELECT o.event_id FROM outbox_events o
 		     WHERE o.status = 'PENDING'
@@ -90,54 +87,53 @@ func (r *postgresRepository) Claim(ctx context.Context, publisher string, limit 
 		     FOR UPDATE OF o SKIP LOCKED
 		     LIMIT $4)
 		 RETURNING `+outboxColumns,
-		publisher, now, lease.Seconds(), limit)
-	if err != nil {
-		return nil, fmt.Errorf("claim outbox events: %w", db.Classify(err))
-	}
-	snapshots, err := pgx.CollectRows(rows, pgx.RowToStructByName[entities.OutboxEventSnapshot])
-	if err != nil {
-		return nil, fmt.Errorf("claim outbox events: %w", db.Classify(err))
-	}
-
-	events = make([]*entities.OutboxEvent, 0, len(snapshots))
-	for _, snapshot := range snapshots {
-		event, err := entities.RehydrateOutboxEvent(snapshot)
+			publisher, now, lease.Seconds(), limit)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("claim outbox events: %w", db.Classify(err))
 		}
-		events = append(events, event)
-	}
-	// RETURNING does not promise the order of the subquery.
-	sort.SliceStable(events, func(i, j int) bool { return events[i].OccurredAt().Before(events[j].OccurredAt()) })
-	return events, nil
+		snapshots, err := pgx.CollectRows(rows, pgx.RowToStructByName[entities.OutboxEventSnapshot])
+		if err != nil {
+			return nil, fmt.Errorf("claim outbox events: %w", db.Classify(err))
+		}
+
+		events := make([]*entities.OutboxEvent, 0, len(snapshots))
+		for _, snapshot := range snapshots {
+			event, err := entities.RehydrateOutboxEvent(snapshot)
+			if err != nil {
+				return nil, err
+			}
+			events = append(events, event)
+		}
+		// RETURNING does not promise the order of the subquery.
+		sort.SliceStable(events, func(i, j int) bool { return events[i].OccurredAt().Before(events[j].OccurredAt()) })
+		return events, nil
+	})
 }
 
-func (r *postgresRepository) Complete(ctx context.Context, event *entities.OutboxEvent) (err error) {
-	ctx, end := r.obs.Start(ctx, observability.LayerRepository, "outbox.Repository.Complete")
-	defer func() { end(err) }()
-
-	_, err = r.db.Q(ctx).Exec(ctx,
-		`UPDATE outbox_events
+func (r *postgresRepository) Complete(ctx context.Context, event *entities.OutboxEvent) error {
+	return observability.TraceErr(ctx, r.obs, observability.LayerRepository, "outbox.Repository.Complete", func(ctx context.Context) error {
+		_, err := r.db.Q(ctx).Exec(ctx,
+			`UPDATE outbox_events
 		 SET status = 'PUBLISHED', published_at = $2, locked_by = NULL, locked_at = NULL
 		 WHERE event_id = $1 AND status = 'PENDING'`,
-		event.ID(), event.PublishedAt())
-	if err != nil {
-		return fmt.Errorf("complete outbox event: %w", db.Classify(err))
-	}
-	return nil
+			event.ID(), event.PublishedAt())
+		if err != nil {
+			return fmt.Errorf("complete outbox event: %w", db.Classify(err))
+		}
+		return nil
+	})
 }
 
-func (r *postgresRepository) Release(ctx context.Context, event *entities.OutboxEvent, publisher string) (err error) {
-	ctx, end := r.obs.Start(ctx, observability.LayerRepository, "outbox.Repository.Release")
-	defer func() { end(err) }()
-
-	_, err = r.db.Q(ctx).Exec(ctx,
-		`UPDATE outbox_events
+func (r *postgresRepository) Release(ctx context.Context, event *entities.OutboxEvent, publisher string) error {
+	return observability.TraceErr(ctx, r.obs, observability.LayerRepository, "outbox.Repository.Release", func(ctx context.Context) error {
+		_, err := r.db.Q(ctx).Exec(ctx,
+			`UPDATE outbox_events
 		 SET next_attempt_at = $2, locked_by = NULL, locked_at = NULL
 		 WHERE event_id = $1 AND status = 'PENDING' AND locked_by = $3`,
-		event.ID(), event.NextAttemptAt(), publisher)
-	if err != nil {
-		return fmt.Errorf("release outbox event: %w", db.Classify(err))
-	}
-	return nil
+			event.ID(), event.NextAttemptAt(), publisher)
+		if err != nil {
+			return fmt.Errorf("release outbox event: %w", db.Classify(err))
+		}
+		return nil
+	})
 }

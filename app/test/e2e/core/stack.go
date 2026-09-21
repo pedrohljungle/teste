@@ -121,7 +121,6 @@ func boot(ctx context.Context, in *infra) (*Stack, error) {
 		"APP_ENV":                "development",
 		"PORT":                   port,
 		"DATABASE_URL":           in.databaseURL,
-		"REDIS_URL":              in.redisURL,
 		"KEYCLOAK_ISSUER":        in.keycloakURL + "/realms/pedro-test",
 		"KEYCLOAK_AUDIENCE":      "pedro-test-api",
 		"KEYCLOAK_CLIENT_ID":     "pedro-test-worker",

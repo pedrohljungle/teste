@@ -19,47 +19,46 @@ const (
 	maxPageSize = 200
 )
 
-func (s *service) Get(ctx context.Context, id uuid.UUID) (wallet *entities.Wallet, err error) {
-	ctx, end := s.obs.Start(ctx, observability.LayerService, "wallet.Service.Get")
-	defer func() { end(err) }()
-
-	return s.wallets.Get(ctx, id)
+func (s *service) Get(ctx context.Context, id uuid.UUID) (*entities.Wallet, error) {
+	return observability.Trace(ctx, s.obs, observability.LayerService, "wallet.Service.Get", func(ctx context.Context) (*entities.Wallet, error) {
+		return s.wallets.Get(ctx, id)
+	})
 }
 
-func (s *service) Ledger(ctx context.Context, walletID uuid.UUID, cursor string, limit int) (page structs.LedgerPage, err error) {
-	ctx, end := s.obs.Start(ctx, observability.LayerService, "wallet.Service.Ledger")
-	defer func() { end(err) }()
+func (s *service) Ledger(ctx context.Context, walletID uuid.UUID, cursor string, limit int) (structs.LedgerPage, error) {
+	return observability.Trace(ctx, s.obs, observability.LayerService, "wallet.Service.Ledger", func(ctx context.Context) (structs.LedgerPage, error) {
+		if limit < 0 {
+			return structs.LedgerPage{}, walletiface.ErrInvalidPage
+		}
+		if limit == 0 {
+			limit = defaultPageSize
+		}
+		limit = min(limit, maxPageSize)
 
-	if limit < 0 {
-		return structs.LedgerPage{}, walletiface.ErrInvalidPage
-	}
-	if limit == 0 {
-		limit = defaultPageSize
-	}
-	limit = min(limit, maxPageSize)
+		afterSeq, err := structs.DecodeCursor(cursor)
+		if err != nil {
+			return structs.LedgerPage{}, err
+		}
+		// An empty ledger and a wallet that does not exist look the same to a query, and are answered
+		// differently.
+		if _, err := s.wallets.Get(ctx, walletID); err != nil {
+			return structs.LedgerPage{}, err
+		}
 
-	afterSeq, err := structs.DecodeCursor(cursor)
-	if err != nil {
-		return structs.LedgerPage{}, err
-	}
-	// An empty ledger and a wallet that does not exist look the same to a query, and are answered
-	// differently.
-	if _, err := s.wallets.Get(ctx, walletID); err != nil {
-		return structs.LedgerPage{}, err
-	}
-
-	// One more than asked for tells whether there is a next page without a second query.
-	entries, err := s.wallets.ListEntries(ctx, walletID, afterSeq, limit+1)
-	if err != nil {
-		return structs.LedgerPage{}, err
-	}
-	if len(entries) > limit {
-		entries = entries[:limit]
-		page.HasMore = true
-	}
-	page.Entries = entries
-	if len(entries) > 0 {
-		page.NextAfter = entries[len(entries)-1].Seq()
-	}
-	return page, nil
+		// One more than asked for tells whether there is a next page without a second query.
+		entries, err := s.wallets.ListEntries(ctx, walletID, afterSeq, limit+1)
+		if err != nil {
+			return structs.LedgerPage{}, err
+		}
+		page := structs.LedgerPage{}
+		if len(entries) > limit {
+			entries = entries[:limit]
+			page.HasMore = true
+		}
+		page.Entries = entries
+		if len(entries) > 0 {
+			page.NextAfter = entries[len(entries)-1].Seq()
+		}
+		return page, nil
+	})
 }

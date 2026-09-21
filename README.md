@@ -16,7 +16,7 @@ Dinheiro é `int64` em unidades menores (escala 2), nunca `float`.
 | [SPEC-claude.md](SPEC-claude.md) | o plano de implementação, a definição de pronto e os cenários e2e em Gherkin |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | **por que** cada decisão foi tomada; a lógica de negócio (§2), o modelo de dados (§3) e os fluxos (§4) |
 | [CLAUDE.md](CLAUDE.md) | as regras de como escrever código aqui |
-| [infra/README.md](infra/README.md) | Terraform (VPC, ALB, ECS, RDS, Redis, SQS) |
+| [infra/README.md](infra/README.md) | Terraform (VPC, ALB, ECS, RDS, SQS) |
 
 ---
 
@@ -27,15 +27,15 @@ Dinheiro é `int64` em unidades menores (escala 2), nunca `float`.
    Bearer JWT       │                                              │
    ──────────────▶  │   server            :3000                    │
                     │   Echo + handlers ─▶ services ─▶ repositories│
-                    └──────┬──────────┬───────────┬────────────┬───┘
-                           │          │           │            │
-             valida token  │          │ cache     │ dado       │ publica
-                           ▼          ▼           ▼            ▼
-                    ┌──────────┐ ┌────────┐ ┌──────────┐  ┌────────┐
-                    │ Keycloak │ │ Redis  │ │ Postgres │  │  SQS   │
-                    └──────────┘ └────────┘ └──────────┘  └───┬────┘
-                           ▲                      ▲           │ consome
-            service account│                      │           ▼
+                    └──────┬──────────────┬────────────┬───────────┘
+                           │              │            │
+             valida token  │              │ dado       │ publica
+                           ▼              ▼            ▼
+                    ┌──────────┐   ┌──────────┐   ┌────────┐
+                    │ Keycloak │   │ Postgres │   │  SQS   │
+                    └──────────┘   └──────────┘   └───┬────┘
+                           ▲              ▲           │ consome
+            service account│              │           ▼
                     ┌──────┴──────────────────────┴───────────────┐
                     │   worker            :3010 (probe)           │
                     │   jobrunner ─▶ handlers ─▶ services ─▶ repos │
@@ -82,7 +82,7 @@ make up      # sobe tudo e faz o build das duas imagens
 make logs    # acompanha server e worker
 ```
 
-O compose sobe, nesta ordem: `postgres`, `redis`, `localstack` (SQS), `keycloak`,
+O compose sobe, nesta ordem: `postgres`, `localstack` (SQS), `keycloak`,
 `observability`, o `migrate` (goose, roda e sai) e só então `server` e `worker`.
 
 | Serviço | Endereço |
@@ -339,7 +339,7 @@ make help    # lista tudo
 | `make test` | unitários (services + lógica em `entities`/`structs`), com race detector |
 | `make coverage` | cobertura de `services/`, falha abaixo de 80% |
 | `make lint` | `golangci-lint` — é ele que cobra as regras de camada |
-| `make test-e2e` | fluxos de ponta a ponta com testcontainers (Postgres, Redis, LocalStack, Keycloak) |
+| `make test-e2e` | fluxos de ponta a ponta com testcontainers (Postgres, LocalStack, Keycloak) |
 | `make docs` | regenera o documento Swagger a partir das anotações |
 | `make build` | compila os dois entrypoints em `bin/` |
 | `make tidy` | arruma o `go.mod` |
@@ -378,7 +378,7 @@ Todas estão comentadas em [`.env.example`](.env.example). As que importam para 
 
 ### Fora do Docker
 
-Com Postgres, Redis, LocalStack e Keycloak no ar:
+Com Postgres, LocalStack e Keycloak no ar:
 
 ```bash
 cp .env.example .env
@@ -392,7 +392,7 @@ make run-server      # noutro terminal: make run-worker
 ```bash
 make test        # unitários, sem Docker: services, entities e structs, com -race
 make coverage    # piso de 80% em services/ (hoje ~89%)
-make test-e2e    # precisa de Docker: Postgres, Redis, LocalStack e Keycloak em containers
+make test-e2e    # precisa de Docker: Postgres, LocalStack e Keycloak em containers
 make verify      # tudo acima mais gofmt, go vet e lint
 ```
 
@@ -412,7 +412,7 @@ app/
 │   ├── interfaces/<dom>/   os contratos. Folha: as três camadas apontam para cá.
 │   ├── handlers/<dom>/     entrega: rotas HTTP (com as anotações da doc) e fila
 │   ├── services/<dom>/     regra de negócio
-│   ├── repositories/<dom>/ adapters de I/O (pgx, Redis, SQS)
+│   ├── repositories/<dom>/ adapters de I/O (pgx, SQS)
 │   ├── entities/ structs/  domínio e o que atravessa camadas
 │   └── libs/               config, observabilidade, middleware, auth, db (UnitOfWork), runtime da fila (jobrunner) e dos cronjobs
 └── test/e2e/               testcontainers: fluxos de ponta a ponta

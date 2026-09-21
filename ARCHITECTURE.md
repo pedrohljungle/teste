@@ -8,7 +8,7 @@ justificativa, está em [CLAUDE.md](CLAUDE.md).
 ## 1. O paradigma: Hexagonal (Ports & Adapters)
 
 **Hexagonal (Ports & Adapters), na versão leve.** A regra de negócio fala com o mundo externo
-só por **interfaces (ports) que ela mesma declara**, e os adapters (pgx, Redis, SQS, Keycloak,
+só por **interfaces (ports) que ela mesma declara**, e os adapters (pgx, SQS, Keycloak,
 Echo) as implementam. Não é Clean Architecture com `application/`, `domain/`, `usecases/`: é o
 mínimo que entrega regra testável e fronteira clara, e que **cresce aprofundando o hexágono**
 em vez de trocar de paradigma.
@@ -18,7 +18,7 @@ As três camadas:
 ```
 handlers/       recebe e encaminha. Valida a borda, chama o service, responde. Sem regra.
 services/       a regra de negócio. Declara as portas de que precisa.
-repositories/   adapters de I/O (Postgres, cache, fila) que implementam essas portas.
+repositories/   adapters de I/O (Postgres, fila) que implementam essas portas.
 ```
 
 Mais dois pacotes-folha: `entities/` (espelho de tabela) e `structs/` (o que atravessa camada —
@@ -33,8 +33,8 @@ ele faça.
 
 Três consequências que não são óbvias:
 
-1. **A regra vale para toda I/O com armazenamento externo, não só SQL.** Um `GET` no Redis e um
-   `ReceiveMessage` no SQS seguem o mesmo caminho que um `SELECT` no Postgres: moram em
+1. **A regra vale para toda I/O com armazenamento externo, não só SQL.** Um `ReceiveMessage` no SQS
+   (ou, se um dia houver, um `GET` num cache) segue o mesmo caminho que um `SELECT` no Postgres: moram em
    `repositories/`, atrás de uma porta declarada pelo service que as usa.
 2. **Teste só onde a regra mora.** `services/`, mais a lógica que exista em `entities/` e
    `structs/`. Em `handlers/` e `repositories/` o lint **proíbe importar `testing`** — o que
@@ -146,8 +146,8 @@ app/src/
 │   │   ├── module.go            │       ├── module.go      │   │   ├── module.go
 │   │   ├── http.go              │       ├── service.go     │   │   ├── postgres.go
 │   │   └── job.go               │       ├── completion.go  │   │   └── queue.go
-│   ├── health/                  │       └── *_test.go      │   └── cache/
-│   └── identity/                                           │       └── redis.go
+│   ├── health/                  │       └── *_test.go      │   └── queue/
+│   └── identity/                                           │       └── sqs.go
 
 interfaces/
 └── <dominio>/
@@ -172,11 +172,11 @@ Quatro convenções que caem disso:
    `pedidohandler`). São quatro arquivos no projeto inteiro, e o alias diz de qual camada o
    símbolo veio — que é justamente o que se quer saber ali.
 3. **O que é da camada mas não é domínio fica ao lado dos domínios, nunca dentro de um**:
-   `repositories/cache/` (adapter de chave-valor genérico). O que não é de camada nenhuma —
+   `repositories/queue/` (adapter de SQS genérico). O que não é de camada nenhuma —
    middleware, por exemplo — vai para `libs/`.
 4. **A amarração porta → adapter é do módulo do domínio.** `repositories/<dominio>/module.go`
    liga o `PostgresRepository` às portas que `interfaces/<dominio>` declara. A exceção é o
-   adapter genérico: fazer `repositories/cache` importar um domínio só para satisfazer uma
+   adapter genérico: fazer `repositories/queue` importar um domínio só para satisfazer uma
    porta dele amarraria um adapter compartilhado ao primeiro que o usou — então essa amarração
    sobe para `repositories/module.go`, que é ponto de composição.
 
@@ -976,7 +976,6 @@ app/src/
 │   ├── inbox/         postgres.go
 │   ├── outbox/        postgres.go
 │   ├── persistence/   postgres.go — adapter generico da transacao
-│   ├── cache/         redis.go — ja existe
 │   └── queue/         sqs.go — ja existe, ganha FIFO
 │
 ├── entities/          wallet.go · wager_transaction.go · ledger_entry.go
@@ -1008,11 +1007,11 @@ A porta **não pertence a domínio nenhum**: `services/wallet`, `services/wageri
 `services/outbox` precisam dela, e a mesma transação atravessa os repositórios de todos eles.
 Declará-la em `interfaces/wagering` faria `services/wallet` importar o domínio `wagering` só
 para abrir uma transação. Ela segue então a regra que o CLAUDE.md §3 já tem para o que é da
-camada mas não é domínio — a mesma de `repositories/cache/` e `repositories/queue/`:
+camada mas não é domínio — a mesma de `repositories/queue/`:
 
 ```
 interfaces/persistence/     unitofwork.go   a porta. Folha, sem driver, sem libs.
-repositories/persistence/   postgres.go     o adapter, ao lado de cache/ e queue/.
+repositories/persistence/   postgres.go     o adapter, ao lado de queue/.
                                             A amarracao sobe para repositories/module.go.
 libs/db/                    tx.go           o mecanismo: tx no contexto + Accessor.
 ```
@@ -1324,7 +1323,7 @@ Três coisas que a fiação manual resolve mal e o `fx` resolve:
 - **Falha de boot que desfaz o que já subiu.** Com `defer` no `main`, a metade que subiu antes
   do erro vaza.
 - **Erro de fiação vira teste.** `fx.ValidateApp` valida o grafo **sem executar construtor
-  nenhum** — não abre banco, não toca Redis. É o `main_test.go` de cada entrypoint.
+  nenhum** — não abre banco nem toca a fila. É o `main_test.go` de cada entrypoint.
 
 ### O custo, declarado
 
@@ -1535,8 +1534,8 @@ validação offline por JWKS e RS256 fixado estão acima; o que este domínio ac
 
 ## 9. Fila: SQS com ack explícito
 
-A fila é **SQS** — em dev, LocalStack. O Redis continua no projeto, servindo o cache da
-listagem.
+A fila é **SQS** — em dev, LocalStack. Não há cache no projeto: o Redis foi retirado por ora, e
+o que ele poderia aliviar está registrado no [TO DO da §22](#22-to-do--cache-de-leitura-e-cdn).
 
 - **`libs/awsclients` só constrói o client**; quem envia e recebe é `repositories/queue`, que
   implementa `jobrunner.Source` (consumir) e expõe `Publish` (produzir). É a mesma regra do
@@ -1615,14 +1614,27 @@ receber três parâmetros e — pior — permitiriam abrir o span e esquecer de 
 existe um tipo só, injetado em toda camada:
 
 ```go
-ctx, end := s.obs.Start(ctx, observability.LayerService, "pedido.Service.List")
-defer func() { end(err) }()
+func (s *service) List(ctx context.Context) ([]entities.Pedido, error) {
+    return observability.Trace(ctx, s.obs, observability.LayerService, "pedido.Service.List",
+        func(ctx context.Context) ([]entities.Pedido, error) {
+            return s.pedidos.List(ctx)
+        })
+}
 ```
 
-O encerrador **recebe o erro**. Não-nulo vira `span.RecordError` + status de erro + contador
-de falha + log em nível `error`. **Não há caminho em que um erro suba sem ser registrado.**
+O span é encerrado **com o erro que a função devolveu**. Não-nulo vira `span.RecordError` +
+status de erro + contador de falha + log em nível `error`. **Não há caminho em que um erro suba
+sem ser registrado.** Um panic encerra o span como falha e segue para o middleware de recover.
 
-> A forma longa do `defer` é obrigatória: `defer end(err)` avalia `err` ainda `nil`.
+> **Sem retorno nomeado.** A versão anterior abria o span com `defer func() { end(err) }()`, e
+> isso obrigava a função a declarar `(x T, err error)`: só um `err` nomeado é visto pelo `defer`
+> depois do `return`, e a forma curta (`defer end(err)`) avalia `err` ainda `nil`. Retorno nomeado
+> convida a `return` sem operandos, a atribuir a variável errada dentro de um closure aninhado e a
+> devolver, sem querer, um valor pela metade junto com o erro. `Trace` e `TraceErr` tiram a
+> necessidade: o helper vê o retorno do closure, e a função devolve variáveis locais e declara só
+> os tipos. Onde é preciso agir em volta do span — registrar o resultado, ou encerrar com um erro
+> diferente do devolvido, como a leitura que não acha nada —, usa-se `Start` com o corpo numa
+> função interna, e o `end(...)` é chamado antes do `return`.
 
 ### Todas as camadas
 
@@ -1633,7 +1645,6 @@ atributo, um trace lento diz "levou 900ms" e cala sobre onde:
 GET /pedidos                        [otelecho — span do servidor]
 └─ GET /pedidos                     app.layer=handler
    └─ pedido.Service.List           app.layer=service
-      ├─ cache.Get                  app.layer=repository
       └─ pedido.Postgres.List       app.layer=repository
 ```
 
@@ -1693,7 +1704,7 @@ comparação usa `errors.Is`, então um erro embrulhado continua sendo o mesmo e
 o padrão.**
 
 A contrapartida: **engolir um erro só é permitido via `obs.Error`**, que registra no span e no
-log. É o que acontece no cache indisponível e na publicação de job que falhou.
+log. É o que acontece na publicação de job que falhou.
 
 ### Correlação e desligamento gracioso
 
@@ -1739,7 +1750,7 @@ Duas categorias, e só duas.
 
 | Pacote | O que se prova |
 |---|---|
-| `services/<dominio>/` | a regra de negócio, contra dublês das portas. Nenhum Postgres, Redis, SQS ou Keycloak sobe. |
+| `services/<dominio>/` | a regra de negócio, contra dublês das portas. Nenhum Postgres, SQS ou Keycloak sobe. |
 | `entities/`, `structs/` | a lógica que existe ali (`Task.IsCompleted`, `Principal.HasRole`), e só ela. Struct sem comportamento não ganha teste. |
 
 **Em mais nenhum lugar**, e isso é **cobrado pelo lint**, que proíbe importar `testing` fora
@@ -1754,7 +1765,7 @@ regra — mede volume, não risco.
 
 ### Ponta a ponta — `make test-e2e`, em `app/test/`, com testcontainers
 
-Sobe **Postgres, Redis, LocalStack (SQS) e Keycloak de verdade**, aplica as migrações e roda o
+Sobe **Postgres, LocalStack (SQS) e Keycloak de verdade**, aplica as migrações e roda o
 servidor e o worker no mesmo processo. Nada é dublê: é a única camada de teste que exerce os
 adapters, a validação de assinatura do JWT, o SQL real e o ciclo de vida de uma mensagem.
 
@@ -1815,9 +1826,9 @@ Cinco decisões dessa suíte:
 | `one-error-library` | `github.com/pkg/errors` em qualquer lugar |
 | `errorlint` | `==` em erro, type assertion sobre erro, `%v` onde cabia `%w` |
 | `interfaces-are-leaves` | contrato importando camada, `libs/`, driver ou framework |
-| `entities-are-leaves` / `structs-are-leaves` | DTO e entidade puxando camada, pgx, Redis ou Echo |
-| `services-without-infrastructure` | service importando pgx, redis, echo, go-oidc ou `repositories` |
-| `handlers-without-storage` | handler falando com banco, cache, repositório — ou com a implementação do service |
+| `entities-are-leaves` / `structs-are-leaves` | DTO e entidade puxando camada, pgx ou Echo |
+| `services-without-infrastructure` | service importando pgx, echo, go-oidc ou `repositories` |
+| `handlers-without-storage` | handler falando com banco, repositório — ou com a implementação do service |
 | `repositories-without-http` | adapter conhecendo Echo, `handlers` ou `services` |
 | `telemetry-libraries-stay-in-observability` | `zap` e o SDK do OTel vazando para as camadas |
 | `fx` fora de `module.go` e `cmd/` | fiação misturada com regra |
@@ -1844,7 +1855,6 @@ app/
 │   │   └── identity/       quem é quem chamou (não é domínio)
 │   ├── services/       regra de negócio, implementando os contratos. VAZIA hoje.
 │   ├── repositories/   adapters de I/O
-│   │   ├── cache/          adapter chave-valor genérico (não é domínio)
 │   │   └── queue/          adapter de SQS, carrega bytes (não é domínio)
 │   ├── entities/       espelho das tabelas. Folha. VAZIA hoje.
 │   ├── structs/        o que atravessa camadas (QueueMessage, Principal, APIError)
@@ -1854,14 +1864,14 @@ app/
 │       ├── config/         ambiente → Config, validada no boot
 │       ├── observability/  OTel + zap atrás do Observer
 │       ├── middleware/     autenticação e telemetria por requisição
-│       ├── db/             pool pgx e client Redis + ciclo de vida
+│       ├── db/             pool pgx + ciclo de vida
 │       ├── awsclients/     client do SQS
 │       ├── auth/           adapter do Keycloak (verificador + service account)
 │       └── jobrunner/      runtime da fila (laço, concorrência, ack, desligamento)
 └── test/
     └── e2e/            testcontainers: fluxos de ponta a ponta do backend
 docker/                 Dockerfile dos apps e do goose, realm do Keycloak, init do LocalStack
-infra/                  Terraform: VPC, ALB, ECS Fargate, RDS, ElastiCache, SQS
+infra/                  Terraform: VPC, ALB, ECS Fargate, RDS, SQS
 migrations/             SQL do goose
 ```
 
@@ -1886,7 +1896,7 @@ A disciplina é a mesma do resto: **não antecipar**. Ao sentir o sintoma, evolu
 ## 18. Rodando
 
 ```bash
-make up          # postgres, redis, localstack, keycloak, observabilidade, migrate, server, worker
+make up          # postgres, localstack, keycloak, observabilidade, migrate, server, worker
 make token       # imprime um access token (pedro/pedro)
 
 TOKEN=$(make -s token)
@@ -1928,12 +1938,12 @@ contas e endereços de exemplo nos `.tfvars`.
         │        ECS Fargate (privado)          │
         │   server  ·  worker                   │  sem IP público, saída via NAT
         └──────┬───────────────────────┬────────┘
-               │ :5432                 │ :6379
-        ┌──────▼──────┐        ┌───────▼────────┐
-        │ RDS Postgres│        │  ElastiCache   │   subnets PRIVADAS, 2 AZs
-        │   t4g       │        │     Redis      │
-        └─────────────┘        └────────────────┘
-                               SQS (serviço gerenciado, alcançado via NAT)
+               │ :5432
+        ┌──────▼──────┐
+        │ RDS Postgres│   subnets PRIVADAS, 2 AZs
+        │   t4g       │
+        └─────────────┘
+        SQS (serviço gerenciado, alcançado via NAT)
 ```
 
 ### O workspace é o ambiente
@@ -1956,21 +1966,20 @@ gesto que já decide para qual estado se escreve.
 |---|---|---|
 | NAT | um só (ponto único de falha, e o mais barato) | um por AZ |
 | RDS | `db.t4g.micro`, sem multi-AZ, backup 1 dia | `db.t4g.small`, multi-AZ, backup 14 dias |
-| Redis | 1 nó | 2 nós, failover automático |
 | Réplicas | 1 de cada | 2 de cada |
 | Trace | 100% amostrado | 10% |
 | Destruição | permitida | `deletion_protection` no RDS e no ALB |
 
 ### O que a rede garante
 
-- **Só o ALB tem rota para a internet.** Ele fica nas subnets públicas; ECS, RDS e Redis ficam
+- **Só o ALB tem rota para a internet.** Ele fica nas subnets públicas; ECS e RDS ficam
   nas privadas, com `assign_public_ip = false`.
 - **As tasks têm saída, não entrada.** O NAT dá acesso a ECR, Secrets Manager, SQS, IDP e
   coletor; nada de fora abre conexão para elas.
 - **Toda regra nomeia um security group, nunca um CIDR** — e todas moram num arquivo só
   (`security.tf`), que é o mapa de conectividade do stack. Ampliar acesso depois é nomear outro
   grupo: um ato explícito, em vez de um `/16` que ninguém relê.
-- **RDS e Redis não abrem conexão para nada.** Só têm ingress, e só vindo das tasks.
+- **O RDS não abre conexão para nada.** Só têm ingress, e só vindo das tasks.
 
 ### Segredos não passam pelo Terraform
 
@@ -2080,3 +2089,30 @@ página lá, a proteção não deve vir da aplicação:
 - Autoscaling dos serviços: do server por CPU/requisições, do worker pela profundidade da fila —
   que a aplicação já publica como métrica.
 - Alarme ligado ao SNS na DLQ (o alarme existe, `alarm_actions` está vazio).
+
+---
+
+## 22. TO DO — cache de leitura e CDN
+
+O Redis foi **retirado** do projeto por ora (código, compose, `.env`, testcontainers e Terraform).
+Ele estava lá para uma listagem em cache-aside que este domínio não tem: as leituras de carteira,
+ledger e transação vão direto ao Postgres, e o **saldo nunca é cacheado** — a única fonte dele é a
+linha travada no Postgres, e um cache de saldo transformaria a reconciliação (§2) numa medida do
+cache.
+
+Fica registrado como **TO DO**, e não como decisão, que um cache pode aliviar carga do banco, junto
+com cache de CDN na borda (§17), **mas exige análise maior antes de entrar**:
+
+- **O que é seguro cachear.** Candidatos: leitura de transação já em estado terminal (`PROCESSED`
+  ou `REJECTED` não mudam) e páginas do ledger fechadas por cursor (o ledger é append-only, então
+  uma página cheia é imutável). Fora de cogitação: saldo, versão da carteira e qualquer coisa que a
+  reconciliação compare.
+- **Quanto de carga ele tira de fato.** O caminho quente é escrita (aposta, crédito, débito), que
+  cache nenhum alivia. Sem medir a proporção leitura/escrita e a latência das leituras hoje, o
+  ganho é hipótese.
+- **Invalidação e autorização.** A resposta depende de quem lê (um provedor só vê as próprias
+  transações, com 404 para as de outro): a chave de cache tem de carregar a identidade, ou o cache
+  vaza dado entre provedores. Numa CDN isso pesa ainda mais.
+- **Onde ficaria.** Um adapter atrás de uma porta declarada pelo service (`Cache`), em
+  `repositories/`, como qualquer I/O (§1); o lint já impede um service de importar o cliente.
+  Reintroduzi-lo é acrescentar um módulo, um container no compose e no e2e, e um módulo Terraform.

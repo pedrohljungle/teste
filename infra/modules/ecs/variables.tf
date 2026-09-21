@@ -112,11 +112,6 @@ variable "database_secret_arn" {
   type        = string
 }
 
-variable "redis_url" {
-  description = "Connection URL of the cache."
-  type        = string
-}
-
 variable "queue_url" {
   description = "URL of the job queue."
   type        = string
