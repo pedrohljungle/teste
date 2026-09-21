@@ -18,6 +18,27 @@ Dinheiro é `int64` em unidades menores (escala 2), nunca `float`.
 | [CLAUDE.md](CLAUDE.md) | as regras de como escrever código aqui |
 | [infra/README.md](infra/README.md) | Terraform (VPC, ALB, ECS, RDS, SQS) |
 
+<!-- indice:inicio -->
+## Índice
+
+- [Pré-requisitos](#pré-requisitos)
+- [Os componentes](#os-componentes)
+- [Subindo com docker-compose](#subindo-com-docker-compose)
+  - [Doc da API: ver, pegar token e testar no navegador](#doc-da-api-ver-pegar-token-e-testar-no-navegador)
+  - [Exercitando](#exercitando)
+  - [Exercitando a fila](#exercitando-a-fila)
+- [Lendo a telemetria](#lendo-a-telemetria)
+  - [Traces (Tempo)](#traces-tempo)
+  - [Métricas (Prometheus)](#métricas-prometheus)
+  - [Sem abrir o navegador](#sem-abrir-o-navegador)
+  - [Logs](#logs)
+- [Comandos](#comandos)
+  - [Variáveis de ambiente](#variáveis-de-ambiente)
+  - [Fora do Docker](#fora-do-docker)
+  - [Testes](#testes)
+- [Estrutura](#estrutura)
+<!-- indice:fim -->
+
 ---
 
 ## Pré-requisitos
