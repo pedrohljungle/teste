@@ -24,24 +24,26 @@ import (
 // It is shared by every instance the suite starts, so what one publisher counts and what the server
 // counts land in the same place, as they would in the same backend.
 type telemetry struct {
-	reader  *metric.ManualReader
-	logs    *observer.ObservedLogs
-	logCore zapcore.Core
+	reader   *metric.ManualReader
+	provider *metric.MeterProvider
+	logs     *observer.ObservedLogs
+	logCore  zapcore.Core
 
 	mu sync.Mutex
 }
 
 func newTelemetry() *telemetry {
 	core, logs := observer.New(zapcore.DebugLevel)
-	return &telemetry{reader: metric.NewManualReader(), logs: logs, logCore: core}
+	reader := metric.NewManualReader()
+	// One provider for every instance and every restart: a reader registers with a single one.
+	return &telemetry{reader: reader, provider: metric.NewMeterProvider(metric.WithReader(reader)), logs: logs, logCore: core}
 }
 
 // options replaces the meter provider with one that a reader can be asked, and tees the logger into
 // the recording core, so everything still goes where it went before as well.
 func (t *telemetry) options() fx.Option {
-	provider := metric.NewMeterProvider(metric.WithReader(t.reader))
 	return fx.Options(
-		fx.Decorate(func(apimetric.MeterProvider) apimetric.MeterProvider { return provider }),
+		fx.Decorate(func(apimetric.MeterProvider) apimetric.MeterProvider { return t.provider }),
 		fx.Decorate(func(log *zap.Logger) *zap.Logger {
 			return zap.New(zapcore.NewTee(log.Core(), t.logCore))
 		}),

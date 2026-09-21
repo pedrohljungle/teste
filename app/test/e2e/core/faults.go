@@ -4,6 +4,7 @@ package core
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sync"
@@ -12,10 +13,14 @@ import (
 	"go.uber.org/fx"
 
 	"github.com/estrategiahq/pedro-test/app/src/entities"
+	wageringhandler "github.com/estrategiahq/pedro-test/app/src/handlers/wagering"
 	healthiface "github.com/estrategiahq/pedro-test/app/src/interfaces/health"
 	outboxiface "github.com/estrategiahq/pedro-test/app/src/interfaces/outbox"
 	persistenceiface "github.com/estrategiahq/pedro-test/app/src/interfaces/persistence"
 	wageringiface "github.com/estrategiahq/pedro-test/app/src/interfaces/wagering"
+	"github.com/estrategiahq/pedro-test/app/src/libs/jobrunner"
+	"github.com/estrategiahq/pedro-test/app/src/repositories/queue"
+	"github.com/estrategiahq/pedro-test/app/src/structs"
 )
 
 // Faults is where a scenario asks for a failure that cannot be provoked from outside: a broker
@@ -34,6 +39,8 @@ type Faults struct {
 	failStorage  map[string]int
 	attempts     map[string][]time.Time
 	down         map[string]bool
+	failAck      map[string]int
+	deliveries   map[string]int
 }
 
 func newFaults() *Faults {
@@ -43,6 +50,8 @@ func newFaults() *Faults {
 		failStorage:  map[string]int{},
 		attempts:     map[string][]time.Time{},
 		down:         map[string]bool{},
+		failAck:      map[string]int{},
+		deliveries:   map[string]int{},
 	}
 }
 
@@ -78,6 +87,22 @@ func (f *Faults) SetDependencyDown(name string, down bool) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.down[name] = down
+}
+
+// FailAcknowledging makes the next acknowledgements of the message with that id fail after the
+// handler already committed its work: the process died between the commit and the delete. The
+// message is not removed, so the queue delivers it again once the visibility timeout expires.
+func (f *Faults) FailAcknowledging(messageID string, times int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.failAck[messageID] = times
+}
+
+// Deliveries is how many times the message with that id was handed to a consumer.
+func (f *Faults) Deliveries(messageID string) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.deliveries[messageID]
 }
 
 func (f *Faults) isDown(name string) bool {
@@ -133,6 +158,48 @@ func (f *Faults) options() fx.Option {
 			fx.ParamTags(`group:"health"`), fx.ResultTags(`group:"health"`),
 		)),
 	)
+}
+
+// prepareWorkers mirrors cmd/worker: the wagering messages are registered on the job runner through
+// the same PrepareWorker, so what the suite consumes is the real handler. The source is wrapped so a
+// scenario can count deliveries and drop acknowledgements.
+func (f *Faults) prepareWorkers(runner *jobrunner.Runner, source *queue.SQS, handler *wageringhandler.JobHandler) {
+	wageringhandler.PrepareWorker(runner, &faultySource{Source: source, faults: f}, handler)
+}
+
+// faultySource passes everything through but the acknowledgement, and counts the deliveries.
+type faultySource struct {
+	jobrunner.Source
+	faults *Faults
+}
+
+func messageIDOf(msg *structs.QueueMessage) string {
+	var envelope struct {
+		MessageID string `json:"messageId"`
+	}
+	if err := json.Unmarshal(msg.Payload, &envelope); err != nil {
+		return ""
+	}
+	return envelope.MessageID
+}
+
+func (s *faultySource) Consume(ctx context.Context) (*structs.QueueMessage, error) {
+	msg, err := s.Source.Consume(ctx)
+	if msg != nil {
+		if id := messageIDOf(msg); id != "" {
+			s.faults.mu.Lock()
+			s.faults.deliveries[id]++
+			s.faults.mu.Unlock()
+		}
+	}
+	return msg, err
+}
+
+func (s *faultySource) Ack(ctx context.Context, msg structs.QueueMessage) error {
+	if s.faults.consume(s.faults.failAck, messageIDOf(&msg)) {
+		return errors.New("injected: the process died before deleting the message")
+	}
+	return s.Source.Ack(ctx, msg)
 }
 
 type faultyPublisher struct {

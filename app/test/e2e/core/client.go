@@ -155,6 +155,12 @@ func (s *Stack) Request(t *testing.T, method, path, bearer string, body any) *ht
 // RequestWithHeaders is Request with extra headers, such as an Idempotency-Key or a request id.
 func (s *Stack) RequestWithHeaders(t *testing.T, method, path, bearer string, body any, headers map[string]string) *http.Response {
 	t.Helper()
+	return RequestAt(t, s.BaseURL, method, path, bearer, body, headers)
+}
+
+// RequestAt is RequestWithHeaders against any instance, given by its base URL.
+func RequestAt(t *testing.T, baseURL, method, path, bearer string, body any, headers map[string]string) *http.Response {
+	t.Helper()
 
 	var reader io.Reader
 	if body != nil {
@@ -165,7 +171,7 @@ func (s *Stack) RequestWithHeaders(t *testing.T, method, path, bearer string, bo
 		reader = bytes.NewReader(encoded)
 	}
 
-	req, err := http.NewRequestWithContext(context.Background(), method, s.BaseURL+path, reader)
+	req, err := http.NewRequestWithContext(context.Background(), method, baseURL+path, reader)
 	if err != nil {
 		t.Fatalf("build the request: %v", err)
 	}

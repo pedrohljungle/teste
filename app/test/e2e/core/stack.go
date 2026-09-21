@@ -32,7 +32,6 @@ import (
 	"github.com/estrategiahq/pedro-test/app/src/libs/cronjob"
 	"github.com/estrategiahq/pedro-test/app/src/libs/jobrunner"
 	"github.com/estrategiahq/pedro-test/app/src/libs/middleware"
-	"github.com/estrategiahq/pedro-test/app/src/repositories/queue"
 	"github.com/estrategiahq/pedro-test/app/src/structs"
 )
 
@@ -67,6 +66,7 @@ type Stack struct {
 	poolErr     error
 	app         *fx.App
 	infra       *infra
+	port        string
 }
 
 // Repositories are the storage contracts as the running application wired them: the real
@@ -167,36 +167,7 @@ func boot(ctx context.Context, in *infra) (*Stack, error) {
 	faults := newFaults()
 	captured := newTelemetry()
 
-	app := fx.New(
-		fx.Supply(appinfo.App{Name: "pedro-test-e2e", Role: appinfo.RoleServer, Version: "test"}),
-
-		bootstrap.Core,
-		auth.ServerModule,
-		auth.WorkerModule,
-		middleware.Module,
-		handlers.Module,
-		jobrunner.Module,
-		cronjob.Module,
-		faults.options(),
-		captured.options(),
-
-		fx.Provide(newEcho),
-		fx.Invoke(serverRoutes),
-		fx.Invoke(runServer),
-
-		fx.Populate(&repos.UnitOfWork, &repos.Wallets, &repos.Wagering, &repos.Outbox),
-
-		fx.Invoke(prepareWorkers),
-		fx.Invoke(registerCronjobs),
-		fx.Invoke(jobrunner.Run),
-		fx.Invoke(cronjob.Run),
-
-		fx.NopLogger,
-
-		fx.StartTimeout(90*time.Second),
-		fx.StopTimeout(30*time.Second),
-	)
-
+	app := buildApp(repos, faults, captured)
 	if err := app.Start(ctx); err != nil {
 		return nil, fmt.Errorf("start the application: %w", err)
 	}
@@ -226,7 +197,59 @@ func boot(ctx context.Context, in *infra) (*Stack, error) {
 		awsEndpoint: in.awsEndpoint,
 		app:         app,
 		infra:       in,
+		port:        port,
 	}, nil
+}
+
+// buildApp composes the server and the worker in one process, the way the suite runs them, and fills
+// repos with the adapters it wired. The environment must already be set: the configuration is read
+// while the graph is built.
+func buildApp(repos *Repositories, faults *Faults, captured *telemetry) *fx.App {
+	return fx.New(
+		fx.Supply(appinfo.App{Name: "pedro-test-e2e", Role: appinfo.RoleServer, Version: "test"}),
+
+		bootstrap.Core,
+		auth.ServerModule,
+		auth.WorkerModule,
+		middleware.Module,
+		handlers.Module,
+		jobrunner.Module,
+		cronjob.Module,
+		faults.options(),
+		captured.options(),
+
+		fx.Provide(newEcho),
+		fx.Invoke(serverRoutes),
+		fx.Invoke(runServer),
+
+		fx.Populate(&repos.UnitOfWork, &repos.Wallets, &repos.Wagering, &repos.Outbox),
+
+		fx.Invoke(faults.prepareWorkers),
+		fx.Invoke(registerCronjobs),
+		fx.Invoke(jobrunner.Run),
+		fx.Invoke(cronjob.Run),
+
+		fx.NopLogger,
+
+		fx.StartTimeout(90*time.Second),
+		fx.StopTimeout(30*time.Second),
+	)
+}
+
+// Restart stops the application and boots it again on the same address, against the same database
+// and queues: what a deploy or a crash and a restart does to the processes, and nothing to the data.
+// Repos is refilled with the new adapters.
+func (s *Stack) Restart(ctx context.Context) error {
+	if err := s.app.Stop(ctx); err != nil {
+		return fmt.Errorf("stop the application: %w", err)
+	}
+
+	app := buildApp(s.Repos, s.Faults, s.telemetry)
+	if err := app.Start(ctx); err != nil {
+		return fmt.Errorf("start the application again: %w", err)
+	}
+	s.app = app
+	return nil
 }
 
 type requestValidator struct{ validate *validator.Validate }
@@ -278,12 +301,6 @@ func runServer(lc fx.Lifecycle, e *echo.Echo, cfg config.Config) {
 		},
 		OnStop: func(ctx context.Context) error { return e.Shutdown(ctx) },
 	})
-}
-
-// prepareWorkers mirrors cmd/worker: the wagering messages are registered on the job runner through
-// the same PrepareWorker, so what the suite consumes is the real handler.
-func prepareWorkers(runner *jobrunner.Runner, source *queue.SQS, handler *wageringhandler.JobHandler) {
-	wageringhandler.PrepareWorker(runner, source, handler)
 }
 
 func freePort() (string, error) {
