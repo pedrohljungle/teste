@@ -1,0 +1,19 @@
+# Keep the build context to what the images need: go.mod, go.sum, app/ and migrations/.
+# Without this, `COPY . .` also ships .git and, after a `terraform validate`, the ~650MB
+# provider binaries in infra/.terraform.
+.git
+.gitignore
+.env
+.env.*
+!.env.example
+infra
+docs
+*.md
+bin
+tmp
+*.cov
+.idea
+.vscode
+.DS_Store
+docker-compose.yaml
+Makefile
