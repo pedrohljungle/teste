@@ -3,6 +3,9 @@
 Este documento explica **o que** foi decidido e **por que**. A regra em si, curta e sem
 justificativa, está em [CLAUDE.md](CLAUDE.md).
 
+"SPEC §N" neste documento, no código e nas migrations refere-se às seções do **enunciado do
+desafio**, que não está versionado aqui; o [SPEC.md](SPEC.md) é o plano de implementação.
+
 <!-- indice:inicio -->
 ## Índice
 
@@ -112,7 +115,7 @@ Mais dois pacotes-folha: `entities/` (espelho de tabela) e `structs/` (o que atr
 DTO, envelope de mensagem, principal, o modelo de erro da API). **`structs/` é dado**: regra
 que viaja dentro de um DTO é regra aplicada em alguns caminhos e esquecida em outros.
 
-**O domínio implementado é o de carteira e apostas de provedores** (`SPEC.md`): `wallet`,
+**O domínio implementado é o de carteira e apostas de provedores** (o enunciado do desafio, citado neste documento como "SPEC §N"; o plano está em [SPEC.md](SPEC.md)): `wallet`,
 `wagering`, `inbox`, `outbox` e a porta `persistence` (a transação, que não é domínio). Os
 exemplos com `pedido` ao longo deste documento são ilustrativos das *regras de camada*, não do
 domínio real. `/health*` e `/me` não são domínio: são as rotas que qualquer serviço tem.
@@ -1867,7 +1870,7 @@ Sobe **Postgres, LocalStack (SQS) e Keycloak de verdade**, aplica as migrações
 servidor e o worker no mesmo processo. Nada é dublê: é a única camada de teste que exerce os
 adapters, a validação de assinatura do JWT, o SQL real e o ciclo de vida de uma mensagem.
 
-O que ela valida (uma Feature por arquivo, listadas em [SPEC-claude.md](SPEC-claude.md)):
+O que ela valida (uma Feature por arquivo, listadas em [SPEC.md](SPEC.md)):
 
 | Feature | O que estaria quebrado se o teste caísse |
 |---|---|

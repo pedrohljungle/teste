@@ -1,466 +1,761 @@
-# Desafio Backend — Processamento Distribuído de Apostas em Go
+# SPEC.md — plano de ataque do desafio
+
+Este documento é o **diagnóstico e o plano**: o que o repositório já resolve do enunciado do
+desafio, o que falta, em que ordem construir e o que é preciso provar.
+
+> **Sobre as citações.** "SPEC §N" — aqui, no [ARCHITECTURE.md](ARCHITECTURE.md), no código e nas
+> migrations — refere-se às seções do **enunciado do desafio**, que **não está versionado** neste
+> repositório (o `SPEC.md` é este plano, com outra numeração). O texto do enunciado continua no
+> histórico do git, em qualquer commit anterior à renomeação: `git show ddc8f2f:SPEC.md`.
+
+**As decisões técnicas e os diagramas não estão aqui.** Eles foram para o
+[ARCHITECTURE.md](ARCHITECTURE.md), junto das decisões que já existiam:
+
+| Procurando por | Está em |
+|---|---|
+| As seis operações, `Money`, máquina de estados, reversões, idempotência, concorrência, eventos | [ARCHITECTURE §2 — Lógica de negócio](ARCHITECTURE.md#2-lógica-de-negócio-carteira-aposta-e-reversão) |
+| Diagrama ER, DDL, o critério entre constraint e validação em Go | [ARCHITECTURE §3 — Modelo de dados](ARCHITECTURE.md#3-modelo-de-dados) |
+| Componentes, pastas, transação SQL, outbox, filas, contratos HTTP | [ARCHITECTURE §4 — Fluxo de uma operação](ARCHITECTURE.md#4-fluxo-de-uma-operação) |
+| A regra de como escrever código aqui | [CLAUDE.md](CLAUDE.md) |
+
+Aqui ficam três coisas:
+
+1. **O que já está pronto** e é reaproveitado sem tocar (§1).
+2. **O plano em 13 PRs**, com a definition of done de cada um (§3).
+3. **Os 91 cenários de e2e** que o SPEC §13 exige, escritos em Gherkin (§3.2).
+
+> Comparação com o `HUMAN_SPEC.md`: ele cobre o núcleo síncrono (regras por `kind`, lock
+> pessimista, escrita atômica na outbox) e deixa de fora idempotência persistente, inbox/SQS,
+> workers assíncronos, reconciliação e a bateria de testes. Este documento parte do que ele
+> acertou e fecha o resto.
+
+---
+
+## 1. Estado atual: o que já está feito
+
+O repositório hoje é um **esqueleto de runtime** — o domínio `task` foi removido e
+`migrations/` está vazio. O que sobrou é justamente a infraestrutura que o SPEC exige, e ela
+já está no lugar.
+
+| Exigência do SPEC | Onde já está | Status |
+|---|---|---|
+| §4 Composição com Uber `fx`, `fx.Module`/`Provide`/`Invoke` | `libs/bootstrap.Core`, um `module.go` por pacote | **pronto** |
+| §4 `fx.Lifecycle`: start validado, shutdown observável, fecha dependência na ordem | `libs/jobrunner` (espera jobs em voo no `OnStop`), `libs/db`, `libs/observability` | **pronto** |
+| §4 Domínio independente de Fx/HTTP/SQS/driver | `interfaces/` folha + `.golangci.yml` (`services-without-infrastructure`, `interfaces-are-leaves`) | **pronto, e cobrado pelo lint** |
+| §2 IdP externo OIDC, `client_credentials` para serviço | `libs/auth` (verifier + service account), realm em `docker/keycloak/` | **pronto** |
+| §2 RS256 fixado, JWKS carregado no boot com retry, 503 enquanto não carregou | `libs/auth/verifier.go` | **pronto** |
+| §2 Autorização de borda na rota | `middleware.RequireAuthentication` / `RequireRealmRole`, declarados na rota | **pronto** |
+| §4/§10 SQS com ack explícito, DLQ, redrive, visibility timeout | `libs/jobrunner` + `repositories/queue/sqs.go` + `docker/localstack/init-queues.sh` (`maxReceiveCount=5`, `VisibilityTimeout=60`) | **pronto — falta FIFO** |
+| §10 Remover a mensagem só depois do tratamento | `jobrunner` só chama `Ack` quando o handler devolve `nil` | **pronto** |
+| §10 `SIGTERM`: parar de buscar e concluir o que está em voo | `jobrunner.Run` — o contexto da mensagem não herda o cancelamento do laço | **pronto** |
+| §4 `pgx` com SQL explícito | `libs/db/postgres.go` (`pgxpool`), query só em `repositories/` | **pronto** |
+| §4 Migrations versionadas com up/down | goose CLI + serviço `migrate` no compose (`service_completed_successfully`) | **pronto — sem conteúdo** |
+| §12 Logs estruturados, correlação, erro registrado uma vez | `libs/observability.Observer` (OTel + zap), `trace_id`/`span_id` em toda linha | **pronto** |
+| §12 Trace atravessando a fila | trace em message attributes (`otel-`) | **pronto** |
+| §13 `go test -race`, cobertura com piso, e2e com testcontainers reais (Postgres, LocalStack, Keycloak) | `make test`, `make coverage`, `app/test/e2e/core/` | **máquina pronta, cenários a escrever** |
+| §15 `docker compose up --build`, `.env.example`, Makefile | `docker-compose.yaml`, `Makefile` | **pronto** |
+| §9 Health check | `handlers/health` | **parcial — falta separar `live`/`ready`** |
+| Doc de API | swag + Swagger UI, `apierr.Error` | **pronto** |
+
+**Tradução:** dos 100 pontos do SPEC, a infraestrutura que costuma consumir a maior parte do
+tempo já está de pé. O que falta é **domínio** — e é onde estão 70 dos 100 pontos.
+
+### O que falta, em uma lista
+
+Nada disso existe hoje: `Money`, as cinco tabelas, o agregado `Wallet`, a máquina de estados
+de `WagerTransaction`, idempotência persistente, inbox, publisher de outbox, worker de
+referência pendente, reconciliação, os quatro eventos, os endpoints, filas FIFO e as métricas
+de negócio.
+
+---
+
+## 2. As decisões de arquitetura
+
+Estão no [ARCHITECTURE.md](ARCHITECTURE.md), nas seções §2, §3 e §4 — incluindo as quatro que
+ajustam o que o CLAUDE.md diz hoje: `entities/` com comportamento, o service compartilhado
+entre HTTP e SQS, o runtime `libs/cronjob` e a troca das filas para FIFO
+([§4.1](ARCHITECTURE.md#41-o-que-o-domínio-muda-no-desenho)).
+
+---
+
+## 3. Plano de implementação
+
+Ordenado por ponto por hora de trabalho. Cada linha é um PR.
+
+| # | Entrega | Cenários (§3.2) | Fecha |
+|---|---|---|---|
+| 1 | `entities/money.go` + testes unitários | — (unitário) | tira o risco eliminatório de float |
+| 2 | Migration única: 5 tabelas, unicidade, `balance >= 0`, triggers | F11 | §5.8, §6.4 |
+| 3 | `entities/` com invariante, transição e reidratação + testes | — (unitário) | §6 |
+| 4 | `persistence.UnitOfWork` + `db.Accessor` + repositórios pgx | — | §11 atomicidade |
+| 5 | `POST /wallets` + `OPENING` + ledger + outbox no mesmo commit | F1 | primeiro fluxo ponta a ponta |
+| 6 | `POST /wagering/transactions`: `BET`, `WIN`, `LOSS` + idempotência + hash | F2, F4, F10 | §9, 15 pts |
+| 7 | Publisher de outbox + `libs/cronjob` + `wager-events.fifo` | F8 | §11 |
+| 8 | Consumidor SQS + inbox + FIFO | F3, F4 | §10 |
+| 9 | `REFUND`/`ROLLBACK` + cronjob de referência | F5, F6 | §7 |
+| 10 | GETs, cursor, reconciliação | F12, F13 | §9 |
+| 11 | Métricas e `/health/live` + `/health/ready` | F14 | §12, 5 pts |
+| 12 | Os 8 cenários de concorrência e recuperação | F7, F9 | §13, 10 pts |
+| 13 | `README.md` e `ARCHITECTURE.md` atualizados | — | §15, 5 pts |
+
+O passo 1 vem antes do 2 de propósito: `Money` decide se a coluna é `BIGINT` ou `NUMERIC`, e
+migration publicada não se reescreve.
 
-Implemente um serviço em **Go**, com **Uber Fx**, para processar operações financeiras de provedores de jogos em um ambiente distribuído.
+### 3.1 Definition of done
 
-## 1. Objetivo
-
-A aplicação deve oferecer uma API HTTP e um consumidor de mensagens que movimentem carteiras de jogadores com garantias equivalentes. Demonstre que o resultado financeiro continua correto com várias instâncias em execução e falhas entre as etapas do processamento.
-
-A avaliação considera precisão monetária, integridade do ledger, idempotência persistente, concorrência, recuperação de falhas e decisões de arquitetura.
-
-## 2. Autenticação e autorização
-
-Autenticação e autorização são **obrigatórias**, com integração a um IdP externo OAuth 2.0/OIDC.
-
-Recomenda-se **Keycloak** no Docker Compose e `client_credentials` para comunicação entre serviços. A escolha do IdP, a validação de credenciais e o modelo de permissões devem ser justificados em `ARCHITECTURE.md`. Cadastro de senhas e emissão própria de tokens estão fora do escopo.
-
-A identidade autenticada deve determinar o `providerId` autorizado. Provedores acessam apenas suas próprias transações, inclusive em replays; operações de carteira são restritas ao serviço interno.
-
-O acesso à mensageria deve ser controlado por credenciais e políticas do broker, preservando as validações de domínio no consumidor.
-
-## 3. Ambiente de execução e falhas
-
-Cada operação externa pertence a um jogador, uma carteira, um jogo, um provedor e uma rodada. Os tipos externos são `BET`, `WIN`, `LOSS`, `REFUND` e `ROLLBACK`.
-
-Assuma entrega **at-least-once** e prepare a solução para:
-
-- recebimento repetido de uma mesma operação, inclusive por HTTP e SQS;
-- chegada de uma reversão antes da transação que ela referencia;
-- processamento simultâneo de operações da mesma carteira;
-- encerramento abrupto antes ou depois de um commit;
-- publicação repetida de um evento de integração;
-- indisponibilidade temporária do PostgreSQL ou do SQS.
-
-Nenhuma dessas situações pode gerar movimentação duplicada, saldo negativo ou perda de um evento cujo registro foi confirmado no banco.
-
-## 4. Stack
-
-### Tecnologias obrigatórias
-
-| Responsabilidade | Tecnologia |
-| --- | --- |
-| Linguagem e compilação | Go; declare a versão utilizada em `go.mod` e no Dockerfile |
-| Dependências | Go Modules, com `go.mod` e `go.sum` versionados |
-| Composição da aplicação | Uber Fx (`go.uber.org/fx`) |
-| HTTP | `net/http` ou um roteador Go à sua escolha |
-| Autenticação | IdP externo OAuth 2.0/OIDC; Keycloak recomendado |
-| Persistência | PostgreSQL |
-| Mensageria | AWS SQS, executado localmente com LocalStack ou MiniStack |
-| Ambiente local | Docker Compose |
-| Evolução do banco | Migrations versionadas, com aplicação e reversão documentadas |
-| Testes | `testing` e `go test`, incluindo execução com `-race` |
-
-### Acesso ao banco
-
-`pgx` com SQL explícito é preferencial; `sqlc` é opcional. `database/sql` e GORM são aceitos. Transações, locks e constraints devem permanecer explícitos e verificáveis.
-
-Documente em `ARCHITECTURE.md` a biblioteca escolhida, o mapeamento de `Money` e a delimitação da transação SQL entre os repositórios.
-
-### Composição e ciclo de vida
-
-Use Uber Fx na composição de configuração, conexões, repositórios, casos de uso, handlers e workers, com injeção por construtores e organização por `fx.Module`, `fx.Provide` e `fx.Invoke`.
-
-Gerencie servidor, workers e recursos com `fx.Lifecycle`:
-
-- inicialização com validação de configuração e dependências;
-- cancelamento, prazos de execução e término observável dos workers;
-- shutdown com interrupção de novas entradas e conclusão ou liberação do trabalho em andamento;
-- fechamento das dependências após a finalização dos componentes que as utilizam.
-
-O domínio deve permanecer independente de Fx, HTTP, SQS e bibliotecas de persistência. A organização dos pacotes fica a critério do candidato.
-
-## 5. Garantias obrigatórias
-
-1. Dinheiro não pode passar por `float32` ou `float64`, nem durante parsing, cálculo, serialização ou persistência.
-2. Idempotência deve ser persistente e sobreviver ao reinício de todos os processos.
-3. As invariantes financeiras devem ser garantidas no banco, independentemente de locks locais e da deduplicação do SQS FIFO.
-4. Eventos externos só podem ser publicados depois da confirmação da transação que os originou.
-5. O ledger deve ser append-only: correções financeiras exigem novos lançamentos.
-6. Carteiras independentes devem avançar em paralelo; locks globais são proibidos.
-7. Atualizações de saldo devem impedir lost updates.
-8. Unicidade, não negatividade e imutabilidade do ledger devem ser impostas pelo schema, pelas constraints e pelos mecanismos de proteção do banco.
-
-## 6. Modelo de domínio
-
-### Encapsulamento e erros
-
-Modele entidades com estado encapsulado, construtores com validação e métodos explícitos de transição. As invariantes devem ser preservadas em todas as operações públicas.
-
-Separe criação e reidratação. A reidratação não deve reaplicar movimentações, transições ou emissão de eventos.
-
-Valores de domínio não inicializados ou inválidos devem ser rejeitados.
-
-Erros de domínio devem ser classificáveis por tipo ou `errors.Is`/`errors.As`. `panic` não deve representar rejeições de negócio. Operações de I/O devem receber `context.Context` e respeitar cancelamento e timeout.
-
-### 6.1. Money
-
-`Money` é um value object imutável, com valor e moeda. Deve suportar criação a partir de string decimal, zero por moeda, soma, subtração, negação, comparação e serialização.
-
-Use `int64` em unidades mínimas ou uma biblioteca decimal de precisão exata. Documente a representação e seus limites.
-
-- O contrato externo recebe e devolve valores como `{"amount":"25.00","currency":"BRL"}`.
-- Use escala fixa de duas casas e código de moeda ISO 4217.
-- Rejeite valores vazios, `NaN`, `Infinity`, notação científica, escala excedente e valores negativos nas entradas financeiras externas.
-- Não arredonde silenciosamente uma entrada inválida. Caso aceite formas equivalentes, documente a normalização anterior ao hash de idempotência.
-- Aritmética e comparação de valores monetários exigem moedas compatíveis.
-- Se utilizar `int64`, trate overflow no parsing, na soma, na subtração e na negação.
-- Valores negativos são permitidos em diferenças e cálculos internos, mas não no saldo da carteira.
-- A persistência deve preservar exatamente valor e moeda, por exemplo com unidades mínimas em `BIGINT` ou decimal em `NUMERIC`.
-
-É permitido operar apenas em BRL nos cenários principais, desde que o tipo carregue a moeda e existam testes de incompatibilidade entre moedas.
-
-### 6.2. Wallet
-
-A carteira é a raiz do agregado financeiro. Deve carregar identidade, jogador, moeda, saldo, versão e instantes de criação e atualização.
-
-Exponha criação, reidratação e operações de débito/crédito, mantendo a alteração do saldo sob controle do agregado e da transação SQL.
-
-- O par `(playerId, currency)` identifica uma única carteira.
-- Débitos precisam preservar saldo maior ou igual a zero.
-- A moeda de cada movimentação deve coincidir com a da carteira.
-- Cada mudança financeira exige o lançamento correspondente no ledger, confirmado junto com o saldo.
-- A versão inicial é `1`; depois da criação, incremente-a apenas quando houver mudança de saldo.
-- Disputas entre escritores não podem descartar uma atualização confirmada.
-
-A estratégia de controle de concorrência deve ser documentada.
-
-### 6.3. WagerTransaction
-
-Tipos: `OPENING`, `BET`, `WIN`, `LOSS`, `REFUND` e `ROLLBACK`.
-
-Para operações externas, a transação registra os identificadores interno e externo, provedor, chave de idempotência, hash do payload, carteira, jogador, rodada, jogo, tipo, `Money`, referência externa opcional, estado e timestamps. Quando aplicável, persista também a referência interna resolvida, o código de falha e o resultado financeiro retornado ao provedor.
-
-A transação inicia em `PENDING`. As transições para processamento, espera por referência, rejeição e falha permanente devem ser validadas pelo domínio.
-
-| Estado | Significado |
-| --- | --- |
-| `PENDING` | Registro aceito, com processamento ainda não concluído |
-| `PENDING_REFERENCE` | A aplicação depende de uma referência ainda indisponível |
-| `PROCESSED` | Operação concluída com sucesso; estado terminal |
-| `REJECTED` | Operação recusada por uma regra de negócio; estado terminal |
-| `FAILED` | Falha permanente de infraestrutura registrada para auditoria; estado terminal |
-
-Uma transação terminal não deve sofrer novas transições. Replay consulta seu resultado persistido sem reaplicar a operação. Documente a máquina de estados e como distingue falhas transitórias de falhas permanentes.
-
-Todo `PENDING` confirmado deve ter retomada durável por outra instância após uma interrupção. Operações sem dependências podem ser concluídas de forma síncrona, sem commit intermediário de aceite.
-
-`OPENING` é reservado à abertura interna de carteira. Rejeite esse tipo quando enviado por HTTP ou SQS.
-
-`OPENING` exige identidade interna estável, carteira, jogador, moeda, valor, estado e timestamps. Provedor, ID externo, chave e hash externos, rodada, jogo e referência não se aplicam a essa origem. O schema deve distinguir operações internas e externas e impedir crédito inicial duplicado.
-
-### 6.4. WalletLedgerEntry
-
-Cada lançamento registra `id`, `walletId`, `transactionId`, direção (`DEBIT` ou `CREDIT`), valor, saldo anterior, saldo posterior e instante de criação.
-
-O lançamento é imutável e sua construção deve validar `balanceAfter = balanceBefore ± money`, conforme a direção.
-
-Imponha no banco a unicidade de `(walletId, transactionId)` e a proteção contra edição ou exclusão. `LOSS` e operações rejeitadas não produzem lançamentos. Um ledger de partidas dobradas é opcional.
-
-### 6.5. Inbox e outbox
-
-| Registro | Informações e comportamento esperados |
-| --- | --- |
-| Inbox | Identidade da mensagem e do consumidor, hash, recebimento e conclusão; unicidade de `(consumerName, messageId)` |
-| Outbox | Identidade estável do evento, agregado, tipo, payload, ocorrência, tentativas, próximo envio e publicação; suporte a retry com backoff |
-
-Na entrada por SQS, o registro da inbox e a conclusão durável do tratamento devem compartilhar a transação SQL das alterações de domínio, do ledger e dos eventos correspondentes. Uma referência pendente pode ter sua mensagem de entrada concluída após a pendência estar persistida; o worker de referências assume a continuidade.
-
-## 7. Operações e referências
-
-| Tipo | Movimentação | Condição |
-| --- | --- | --- |
-| `BET` | Débito | Exige valor positivo e saldo suficiente |
-| `WIN` | Crédito | Exige valor positivo; pode informar uma aposta da mesma rodada como referência |
-| `LOSS` | Sem movimentação | Exige `money.amount` igual a `"0.00"`; não cria ledger nem altera a versão da carteira |
-| `REFUND` | Crédito | Devolve integralmente o valor de uma `BET` processada |
-| `ROLLBACK` | Movimento contrário ao original | Desfaz integralmente uma `BET`, `WIN` ou `REFUND` processada |
-
-Para `REFUND` e `ROLLBACK`, `referenceExternalTransactionId` é obrigatório e deve ser resolvido por `(providerId, referenceExternalTransactionId)`.
-
-A operação e sua referência devem concordar em provedor, jogador, carteira, moeda e rodada. O valor da reversão precisa ser igual ao valor referenciado; reversões parciais não fazem parte do desafio.
-
-Para este desafio, zero é aceito no saldo inicial e em `LOSS`; `BET`, `WIN`, `REFUND` e `ROLLBACK` exigem valor maior que zero. `LOSS` continua exigindo a moeda da carteira e, quando processado, produz `WagerTransactionProcessed`, sem `WalletBalanceChanged`.
-
-Garanta que uma referência não receba duas reversões bem-sucedidas do mesmo tipo. Documente como trata combinações de `REFUND` e `ROLLBACK` sobre a mesma aposta, preservando a coerência financeira e impedindo devolução duplicada do mesmo débito.
-
-Uma reversão que precisaria debitar mais que o saldo disponível deve ser rejeitada e auditável. Seu código de falha deve ser diferente daquele usado para uma aposta sem saldo.
-
-### Referências ainda indisponíveis
-
-Persista a operação como `PENDING_REFERENCE` quando a referência ainda não tiver chegado. Um worker deve tentar novamente com backoff exponencial, inclusive após reinicialização da aplicação.
-
-Defina um número máximo de tentativas ou TTL. Quando esgotado, finalize como `REJECTED`, informando um código de referência não encontrada e produzindo o evento de rejeição. Explique também o comportamento quando a referência existe, mas ainda está pendente ou terminou sem sucesso.
-
-Toda rejeição deve fornecer um `failureCode` estável e documentado, distinguindo entradas corrigíveis de resultados definitivos.
-
-## 8. Concorrência
-
-A coordenação deve ocorrer por carteira. Escolha locking pessimista, controle otimista com retry limitado, atualização atômica condicionada ou uma combinação justificável.
-
-As garantias devem ser demonstradas com pelo menos três processos independentes, cada um com suas próprias conexões e memória.
-
-Teste obrigatório: uma carteira com **100.00 BRL** recebe, ao mesmo tempo, duas apostas distintas de **80.00 BRL**.
-
-O resultado deve conter uma aposta processada, uma rejeição por saldo insuficiente, saldo final de **20.00 BRL** e um único débito no ledger. Reenvios não podem alterar esse resultado. Carteiras diferentes devem continuar sendo processadas em paralelo.
-
-## 9. Contratos HTTP
-
-### Abertura de carteira
-
-```http
-POST /wallets
-Content-Type: application/json
-```
-
-```json
-{
-  "playerId": "0192f28f-5dc0-7d58-bdb2-814ad6a0f4a1",
-  "initialBalance": { "amount": "1000.00", "currency": "BRL" }
-}
-```
-
-Exemplo de resposta:
-
-```json
-{
-  "id": "0192f291-27dd-7d3f-8071-5f8685deef37",
-  "playerId": "0192f28f-5dc0-7d58-bdb2-814ad6a0f4a1",
-  "balance": { "amount": "1000.00", "currency": "BRL" },
-  "version": 1
-}
-```
-
-Uma abertura com saldo positivo deve criar `OPENING` em `PROCESSED`, seu lançamento de crédito e os registros de outbox para `WagerTransactionProcessed` e `WalletBalanceChanged` no mesmo commit da carteira. Esses eventos de origem interna não exigem os metadados externos inaplicáveis; a versão da carteira nessa abertura é `1`. Saldo inicial zero não cria `OPENING`, ledger nem esses eventos financeiros. Tentar abrir outra carteira para o mesmo jogador e moeda deve resultar em conflito.
-
-### Leitura
-
-```http
-GET /wallets/:walletId
-GET /wallets/:walletId/ledger?cursor=...&limit=50
-GET /wagering/transactions/:transactionId
-GET /providers/:providerId/wagering/transactions/:externalTransactionId
-```
-
-A paginação do ledger deve usar cursor opaco e ordenação estável. As consultas de transação devem permitir acompanhar pendências e consultar códigos de rejeição ou falha.
-
-### Envio de operação
-
-```http
-POST /wagering/transactions
-Content-Type: application/json
-Idempotency-Key: provider-a:transaction-123
-```
-
-```json
-{
-  "providerId": "provider-a",
-  "externalTransactionId": "transaction-123",
-  "playerId": "0192f28f-5dc0-7d58-bdb2-814ad6a0f4a1",
-  "walletId": "0192f291-27dd-7d3f-8071-5f8685deef37",
-  "roundId": "round-987",
-  "gameId": "fortune-chimp",
-  "kind": "BET",
-  "money": { "amount": "25.00", "currency": "BRL" }
-}
-```
-
-Exemplo após processamento:
-
-```json
-{
-  "transactionId": "0192f298-345e-7e38-af88-e43f851a819d",
-  "status": "PROCESSED",
-  "balance": { "amount": "975.00", "currency": "BRL" },
-  "idempotentReplay": false
-}
-```
-
-Para reversões, acrescente `referenceExternalTransactionId` ao corpo.
-
-O header `Idempotency-Key` é obrigatório. O cliente pode construí-lo como `{providerId}:{externalTransactionId}`, mas o servidor não deve substituir silenciosamente uma chave recebida por outra calculada.
-
-Persista um hash determinístico dos campos de negócio, usando JSON canônico com ordenação de chaves. Exclua a chave de idempotência e os metadados de transporte desse cálculo. Documente algoritmo, campos e normalizações, garantindo equivalência entre HTTP e SQS.
-
-- Chave e conteúdo equivalentes: retorne o resultado persistido, com `idempotentReplay: true`.
-- Chave reutilizada com conteúdo diferente: devolva conflito.
-- Uma operação financeira identificada por `(providerId, externalTransactionId)` não pode ser reaplicada usando outra chave.
-- Para operações concluídas, o replay deve devolver o saldo observado no processamento original, mesmo que a carteira já tenha recebido outras movimentações.
-
-Documente os códigos HTTP e os corpos de resposta para entrada inválida, conflito, rejeição de negócio, processamento pendente e indisponibilidade transitória. Essas situações precisam ser distinguíveis pelo contrato.
-
-### Reconciliação
-
-```http
-POST /wallets/:walletId/reconciliation
-```
-
-Exemplo considerando apenas a abertura e a aposta apresentadas acima:
-
-```json
-{
-  "walletId": "0192f291-27dd-7d3f-8071-5f8685deef37",
-  "storedBalance": { "amount": "975.00", "currency": "BRL" },
-  "calculatedBalance": { "amount": "975.00", "currency": "BRL" },
-  "difference": { "amount": "0.00", "currency": "BRL" },
-  "consistent": true,
-  "checkedEntries": 2
-}
-```
-
-Reconstrua o saldo a partir do ledger, incluindo a abertura, e compare os valores em uma visão consistente dos dados. `difference` é o saldo armazenado menos o saldo reconstruído.
-
-Reporte divergências na resposta, nos logs e em uma métrica. A reconciliação não deve alterar o saldo.
-
-### Health checks públicos
-
-```http
-GET /health/live
-GET /health/ready
-```
-
-Liveness do processo e readiness de PostgreSQL e SQS.
-
-## 10. Consumidor SQS
-
-Provisione as filas `wager-transactions.fifo` e `wager-transactions-dlq.fifo`, incluindo a configuração de redrive.
-
-Exemplo de corpo de mensagem:
-
-```json
-{
-  "messageId": "msg-123",
-  "type": "WagerTransactionRequested",
-  "occurredAt": "2026-09-08T12:00:00.000Z",
-  "data": {
-    "providerId": "provider-a",
-    "externalTransactionId": "transaction-123",
-    "idempotencyKey": "provider-a:transaction-123",
-    "playerId": "0192f28f-5dc0-7d58-bdb2-814ad6a0f4a1",
-    "walletId": "0192f291-27dd-7d3f-8071-5f8685deef37",
-    "roundId": "round-987",
-    "gameId": "fortune-chimp",
-    "kind": "BET",
-    "money": { "amount": "25.00", "currency": "BRL" }
-  }
-}
-```
-
-HTTP e SQS devem compartilhar o caso de uso e as garantias de idempotência financeira. Na entrada por SQS, a chave é `data.idempotencyKey`, com deduplicação adicional pela inbox.
-
-- Use o `messageId` do envelope como identidade durável da mensagem para o consumidor e verifique seu hash em reentregas.
-- Remova a mensagem da fila somente após o commit do seu tratamento durável.
-- Rejeições de negócio confirmadas são terminais e permitem a remoção da mensagem.
-- Falhas transitórias exigem retry com backoff; erros permanentes ou tentativas esgotadas devem chegar à DLQ.
-- Documente limites de tentativas, visibility timeout e tratamento de mensagens inválidas.
-- Em `SIGTERM`, pare de buscar trabalho e conclua o processamento em andamento dentro do prazo, ou libere sua visibilidade para reentrega segura.
-
-Documente `MessageGroupId` e `MessageDeduplicationId` e valide a concorrência entre entradas HTTP e SQS.
-
-## 11. Publicação com transactional outbox
-
-Estado da operação, saldo, ledger, inbox e registros de eventos devem ser confirmados atomicamente, conforme aplicável.
-
-Um worker separado publica os registros pendentes da outbox. Ele deve suportar múltiplos publishers, disputa por registros, backoff e recuperação de trabalho abandonado.
-
-Demonstre recuperação após interrupção entre commit e publicação e entre publicação e confirmação na outbox. Eventos pendentes devem ser assumidos por outra instância; republicações devem preservar o `eventId`.
-
-Provisione o destino dos eventos de saída e documente seus contratos de roteamento e consumo.
-
-### Eventos exigidos
-
-| Evento | Gatilho |
-| --- | --- |
-| `WagerTransactionProcessed` | Conclusão bem-sucedida de uma operação, incluindo `LOSS` |
-| `WagerTransactionRejected` | Rejeição definitiva por regra de negócio |
-| `WalletBalanceChanged` | Alteração efetiva do saldo |
-| `WagerTransactionPendingReference` | Registro de espera pela referência |
-
-Defina tipos concretos por evento. O envelope deve conter `eventId`, `eventType`, `aggregateId`, `correlationId`, `causationId` opcional, `occurredAt`, `version` e `data` tipado.
-
-O payload de `WalletBalanceChanged` deve incluir `walletId`, `transactionId`, `direction`, `money`, `balanceBefore`, `balanceAfter` e `walletVersion`.
-
-Tipo e versão devem ser definidos pelo construtor do evento. Use timestamps UTC em RFC 3339 e valores monetários em strings decimais. O payload da outbox deve ser um snapshot imutável.
-
-## 12. Observabilidade
-
-Produza logs JSON com os identificadores disponíveis para rastrear a operação: `correlationId`, `messageId`, `transactionId`, `walletId` e `providerId`. Não registre credenciais, dados sensíveis ou payloads financeiros completos.
-
-Exponha métricas para resultados por status, duplicatas, retries, DLQ, conflitos de concorrência, atraso da outbox, latência de processamento e divergências de reconciliação.
-
-Inclua os health checks definidos na API. Tracing com OpenTelemetry e dashboards são diferenciais opcionais.
-
-## 13. Verificação obrigatória
-
-### Testes unitários
-
-Cubra parsing e operações de `Money`, escala, limites numéricos, entradas inválidas, incompatibilidade de moedas, invariantes da carteira, transições de estado, regras dos cinco tipos externos e conflito de payload para a mesma chave. Inclua a política de valores zero de cada tipo e a abertura interna com seus metadados e eventos.
-
-### Testes de integração
-
-Execute PostgreSQL, o IdP e LocalStack ou MiniStack em containers reais. Verifique migrations, constraints, imutabilidade do ledger, atomicidade financeira, inbox, reentrega, outbox concorrente, retry, DLQ e recuperação após reinicialização.
-
-Adicione uma verificação da composição Fx e de seu início e encerramento, incluindo liberação de recursos dos workers. Não substitua toda a infraestrutura por mocks.
-
-### Autenticação e autorização
-
-- Integração real com o IdP e rejeição de credenciais ausentes, inválidas ou expiradas.
-- Isolamento entre provedores, inclusive em consultas e replays, e restrição das operações internas.
-- Ausência de efeitos financeiros ou exposição de dados em acessos não autorizados.
-
-### Testes de concorrência e recuperação
-
-1. Envie a mesma aposta 50 vezes em paralelo e comprove um único débito.
-2. Execute a disputa das duas apostas de 80.00 sobre saldo de 100.00.
-3. Processe carteiras distintas simultaneamente.
-4. Repita cenários relevantes com pelo menos três instâncias independentes.
-5. Interrompa um consumidor depois do commit e antes da remoção da mensagem; valide a reentrega.
-6. Execute dois publishers disputando a mesma outbox e valide a recuperação de publicação.
-7. Entregue `REFUND` ou `ROLLBACK` antes da referência e comprove a resolução posterior ou a rejeição por expiração.
-8. Reinicie a aplicação e verifique que idempotência, pendências e consistência financeira foram preservadas. Se houver aceite assíncrono, interrompa o processo após confirmar `PENDING` e antes de executar a operação; outra instância deve retomá-la.
-
-Ao final, confira o saldo armazenado contra a soma de créditos menos débitos do ledger. Inclua cenários que cruzem HTTP e SQS para a mesma operação.
-
-Os testes de duplicidade devem exercitar a deduplicação da aplicação, com recebimentos repetidos comprovados.
-
-Execute `go test -race` nos testes aplicáveis.
-
-## 14. Critérios de avaliação
-
-| Critério | Pontos | Evidência esperada |
-| --- | ---: | --- |
-| Integridade financeira | 20 | Precisão, invariantes, reversões e reconciliação confiáveis |
-| Concorrência | 20 | Coordenação entre processos e ausência de atualizações perdidas |
-| Idempotência | 15 | Persistência, detecção de conflito e reprodução do resultado original |
-| Mensageria e recuperação | 15 | Inbox, outbox, retries, DLQ e encerramento seguro |
-| Modelagem e arquitetura | 10 | Encapsulamento em Go, composição com Fx e políticas de autenticação e autorização |
-| Testes | 10 | Integração real, isolamento entre provedores, paralelismo e interrupção |
-| Observabilidade | 5 | Diagnóstico por logs, métricas e health checks |
-| Documentação | 5 | Execução reproduzível e decisões técnicas explicadas |
-| **Total** | **100** | |
-
-São eliminatórios: ausência de autenticação efetiva nos endpoints de negócio, acesso não autorizado a operações ou transações, cálculo monetário em ponto flutuante, saldo negativo por concorrência, movimentação duplicada, idempotência restrita à memória, dependência de uma única instância para funcionar corretamente, publicação anterior ao commit, ausência de ledger auditável ou substituição integral de PostgreSQL, SQS e IdP por mocks nos testes.
-
-Partidas dobradas, tracing e testes de carga são diferenciais opcionais. Testes de carga devem incluir comando reproduzível, ambiente, metodologia, throughput, p50/p95/p99, erros, conflitos e atraso da outbox. Não há meta mínima de RPS.
-
-## 15. Entrega
-
-Entregue o código, migrations, ambiente Docker Compose e instruções suficientes para outra pessoa reproduzir a solução a partir de um checkout limpo.
-
-O `README.md` da solução deve explicar pré-requisitos, variáveis de ambiente, inicialização das filas, aplicação e reversão das migrations, execução da aplicação, exemplos de chamadas e comandos de teste. Inclua `.env.example` com valores locais de exemplo, sem segredos reais.
-
-Inclua o provisionamento automático do IdP, identidades de teste e instruções para executar os fluxos autenticados.
-
-No `ARCHITECTURE.md`, registre as decisões sobre dinheiro, transações, idempotência, locks, referências pendentes, reversões, inbox/outbox, autenticação, autorização, uso do Fx e shutdown. Explicite limitações, interpretações adotadas e trabalho não concluído.
-
-Disponibilize os comandos abaixo ou equivalentes documentados:
+Vale para **toda** etapa da tabela, sem exceção. A etapa só está pronta quando os seis passam:
 
 ```sh
-docker compose up --build
-go test ./...
-go test -race ./...
-go vet ./...
+gofmt -l app/                # tem que sair vazio — SPEC 15 exige codigo formatado
+go vet ./...                 # tambem coberto pelo govet dentro do golangci-lint
+make lint                    # golangci-lint duas vezes: ./... e --build-tags e2e
+make test                    # unitarios, ja com -race e -failfast
+make coverage                # piso sobre services/, onde a regra mora
+make test-e2e                # a suite com testcontainers (Postgres, LocalStack, Keycloak)
 ```
 
-Documente separadamente como preparar as dependências dos testes e executar integração, múltiplas instâncias e simulações de falha. Se utilizar build tags, informe os comandos correspondentes.
+E mais duas condições que comando nenhum verifica sozinho:
 
-Entregue código formatado com `gofmt` e dependências reproduzíveis.
+- **todo cenário de §3.2 associado à etapa existe, roda e passa.** Cenário listado e não
+  escrito é etapa não entregue;
+- **nenhum cenário com `t.Skip`**, `t.Parallel()` faltando onde o cenário exige paralelismo,
+  ou asserção comentada.
+
+> **`gofmt` já está coberto por `make lint`.** O `.golangci.yml` habilita `gofmt` e `goimports`
+> em `formatters:`, e o `golangci-lint` os reporta como `File is not properly formatted
+> (gofmt)` (verificado com um arquivo mal formatado). O `gofmt -l` na lista acima continua
+> valendo por ser o comando que o SPEC §15 cita literalmente, mas não é um segundo mecanismo.
+> Um alvo `make verify` que encadeia os seis passos deixa a DoD num comando só.
+
+### 3.2 Cenários de e2e
+
+Um arquivo por Feature, em `app/test/e2e/`, no formato que o CLAUDE.md §13 exige: `Feature:`
+com papel e objetivo no cabeçalho do arquivo, e o `Scenario:` em `Given/When/Then` no comentário
+de cada função, cujo nome **é** o cenário. Gherkin vai em **inglês**, como todo comentário e
+nome de teste (CLAUDE.md §1); esta prosa continua em português.
+
+Toda Feature que mexe em dinheiro termina com a asserção final do SPEC §13: **saldo armazenado
+igual à soma de créditos menos débitos do ledger.** É um helper de `core/`, chamado no fim de
+cada cenário financeiro, não um cenário separado.
+
+#### F1 — `wallet_opening_test.go` (etapa 5)
+
+```gherkin
+Feature: Wallet opening
+  As the internal wallet service, I want a wallet and its opening credit committed together,
+  so that no player ever starts with an unaudited balance.
+
+  Scenario: Opening with a positive balance creates the credit, the ledger and the events
+    Given no wallet exists for the player and currency
+    When an internal service posts /wallets with an initial balance of 1000.00 BRL
+    Then the wallet is created at version 1 with balance 1000.00 BRL
+    And a PROCESSED OPENING transaction exists carrying no provider metadata
+    And exactly one CREDIT entry exists with balanceBefore 0.00 and balanceAfter 1000.00
+    And WagerTransactionProcessed and WalletBalanceChanged are in the outbox
+
+  Scenario: Opening with a zero balance creates no transaction and no ledger
+    Given no wallet exists for the player and currency
+    When an internal service posts /wallets with an initial balance of 0.00 BRL
+    Then the wallet is created at version 1 with balance 0.00 BRL
+    And no OPENING transaction, no ledger entry and no financial event exist
+
+  Scenario: A second wallet for the same player and currency conflicts
+    Given a wallet exists for the player in BRL
+    When an internal service posts /wallets for the same player in BRL
+    Then the response is 409 and only one wallet exists
+
+  Scenario: A wallet for the same player in another currency is accepted
+    Given a wallet exists for the player in BRL
+    When an internal service posts /wallets for the same player in USD
+    Then the response is 201 and the player holds two wallets
+
+  Scenario: The OPENING kind submitted over the wagering API is refused
+    Given a wallet exists with balance 100.00 BRL
+    When a provider posts /wagering/transactions with kind OPENING
+    Then the response is 400 with failureCode OPENING_NOT_ALLOWED
+    And the balance, the version and the ledger are unchanged
+```
+
+#### F2 — `wagering_http_test.go` (etapa 6)
+
+```gherkin
+Feature: Submitting an operation over HTTP
+  As a game provider, I want each operation applied exactly once with a truthful answer,
+  so that my ledger and the wallet never disagree.
+
+  Scenario: A bet is processed and debits the wallet
+    Given a wallet with balance 1000.00 BRL at version 1
+    When the provider posts a BET of 25.00 BRL with an idempotency key
+    Then the response is 200 with status PROCESSED, balance 975.00 and idempotentReplay false
+    And the wallet is at version 2
+    And exactly one DEBIT entry exists with balanceBefore 1000.00 and balanceAfter 975.00
+
+  Scenario: A bet without sufficient balance is rejected and moves nothing
+    Given a wallet with balance 10.00 BRL at version 1
+    When the provider posts a BET of 25.00 BRL
+    Then the response is 422 with failureCode INSUFFICIENT_FUNDS
+    And the transaction is stored as REJECTED
+    And the balance, the version and the ledger are unchanged
+    And WagerTransactionRejected is in the outbox
+
+  Scenario: A win is processed and credits the wallet
+    Given a wallet with balance 100.00 BRL
+    When the provider posts a WIN of 40.00 BRL referencing a bet of the same round
+    Then the balance is 140.00 BRL and exactly one CREDIT entry exists
+
+  Scenario: A loss is processed without touching the balance, the version or the ledger
+    Given a wallet with balance 100.00 BRL at version 3
+    When the provider posts a LOSS with money 0.00 BRL
+    Then the response is 200 with status PROCESSED
+    And the balance stays 100.00 and the version stays 3
+    And no ledger entry is created
+    And WagerTransactionProcessed is in the outbox and WalletBalanceChanged is not
+
+  Scenario: A loss carrying a non-zero amount is rejected
+    When the provider posts a LOSS with money 5.00 BRL
+    Then the response is 422 with failureCode INVALID_AMOUNT
+
+  Scenario: A bet of zero is rejected
+    When the provider posts a BET with money 0.00 BRL
+    Then the response is 422 with failureCode INVALID_AMOUNT
+
+  Scenario: A request without the Idempotency-Key header is rejected
+    When the provider posts a BET with no Idempotency-Key header
+    Then the response is 400 and nothing is persisted
+
+  Scenario: An amount with more than two decimals is rejected without rounding
+    When the provider posts a BET of 25.001 BRL
+    Then the response is 400 and nothing is persisted
+
+  Scenario: An operation in a currency other than the wallet is rejected
+    Given a wallet in BRL
+    When the provider posts a BET of 25.00 USD
+    Then the response is 422 with failureCode CURRENCY_MISMATCH
+
+  Scenario: An operation for an unknown wallet is rejected
+    When the provider posts a BET for a wallet that does not exist
+    Then the response is 422 with failureCode WALLET_NOT_FOUND
+```
+
+#### F3 — `wagering_sqs_test.go` (etapa 8)
+
+```gherkin
+Feature: Consuming an operation from SQS
+  As the worker, I want a message applied once and removed only after its commit,
+  so that at-least-once delivery never becomes at-least-once money.
+
+  Scenario: A bet delivered over SQS is processed exactly once
+    Given a wallet with balance 1000.00 BRL
+    When a WagerTransactionRequested message carrying a BET of 25.00 BRL is published
+    Then the balance becomes 975.00 with exactly one DEBIT entry
+    And the inbox holds the message id with a completion timestamp
+    And the queue is empty
+
+  Scenario: The same message delivered twice produces a single movement
+    Given a bet already consumed from the queue
+    When the very same message id is delivered again
+    Then the inbox refuses it as a duplicate
+    And no second ledger entry and no second event are created
+
+  Scenario: A redelivery carrying a different body under the same message id is refused
+    Given a bet already consumed from the queue
+    When a message with the same id and a different payload hash arrives
+    Then it is recorded as a conflict and applies nothing
+
+  Scenario: The message is removed from the queue only after the commit
+    Given a bet in flight
+    When the commit has not happened yet
+    Then the message is still invisible rather than deleted
+
+  Scenario: A confirmed business rejection removes the message from the queue
+    Given a wallet with balance 10.00 BRL
+    When a BET of 25.00 BRL arrives over the queue
+    Then the transaction is REJECTED, the message is deleted and the DLQ stays empty
+
+  Scenario: A malformed body is recorded as failed and never retried
+    When a message whose body is not valid JSON arrives
+    Then it is recorded for audit and removed without redelivery
+
+  Scenario: A transient database failure leaves the message for redelivery
+    Given Postgres is unreachable
+    When a bet arrives over the queue
+    Then the message is not acked and reappears after the visibility timeout
+
+  Scenario: A message exhausting maxReceiveCount lands in the DLQ
+    Given a message that fails transiently on every attempt
+    When it has been received more than maxReceiveCount times
+    Then it is in the dead letter queue
+
+  Scenario: The OPENING kind delivered over SQS is refused
+    When a message carrying kind OPENING arrives
+    Then it is rejected with OPENING_NOT_ALLOWED and no wallet is created
+```
+
+#### F4 — `idempotency_test.go` (etapas 6 e 8)
+
+```gherkin
+Feature: Idempotent replay across HTTP and SQS
+  As a game provider retrying after a timeout, I want the stored outcome back,
+  so that a retry can never move money twice.
+
+  Scenario: A replay with the same key and the same payload returns the stored result
+    Given a bet of 25.00 BRL already processed
+    When the identical request is posted again
+    Then the response is 200 with idempotentReplay true and the original transaction id
+    And there is still exactly one ledger entry
+
+  Scenario: A replay returns the balance observed at the original processing
+    Given a bet of 25.00 BRL processed when the balance became 975.00
+    And a later win that moved the balance to 1200.00
+    When the original bet is replayed
+    Then the response carries balance 975.00, not 1200.00
+
+  Scenario: The same key with a different payload returns conflict
+    Given a bet of 25.00 BRL already processed under a key
+    When a bet of 30.00 BRL is posted under the same key
+    Then the response is 409 and nothing is applied
+
+  Scenario: The same operation under a different key returns conflict
+    Given a bet already processed for a provider and external transaction id
+    When the same pair is posted under a different idempotency key
+    Then the response is 409 and nothing is applied
+
+  Scenario: The same operation arriving over HTTP and over SQS is applied once
+    When the identical operation is submitted over HTTP and published to the queue
+    Then exactly one transaction, one ledger entry and one balance change exist
+
+  Scenario: Idempotency survives a restart of every process
+    Given a bet already processed
+    When the server and the worker are restarted
+    And the same request is posted again
+    Then the response is still idempotentReplay true with the original result
+```
+
+#### F5 — `reversals_test.go` (etapa 9)
+
+```gherkin
+Feature: Refunds and rollbacks
+  As the platform, I want a reversal to undo exactly its reference and only once,
+  so that a returned bet can never be returned twice.
+
+  Scenario: A refund of a processed bet credits the exact amount
+    Given a processed BET of 25.00 BRL leaving the balance at 975.00
+    When the provider posts a REFUND referencing it
+    Then the balance returns to 1000.00 with a CREDIT entry of 25.00
+
+  Scenario: A rollback of a bet credits the wallet
+    Given a processed BET of 25.00 BRL
+    When the provider posts a ROLLBACK referencing it
+    Then the balance is credited by 25.00
+
+  Scenario: A rollback of a win debits the wallet
+    Given a processed WIN of 40.00 BRL
+    When the provider posts a ROLLBACK referencing it
+    Then the balance is debited by 40.00
+
+  Scenario: A rollback of a refund debits the wallet
+    Given a processed REFUND of 25.00 BRL
+    When the provider posts a ROLLBACK referencing it
+    Then the balance is debited by 25.00
+
+  Scenario: A rollback that would overdraw is rejected with its own failure code
+    Given a processed WIN of 40.00 BRL and a balance of 10.00 BRL
+    When the provider posts a ROLLBACK referencing that win
+    Then the response is 422 with failureCode ROLLBACK_INSUFFICIENT_FUNDS
+    And the code differs from the one a bet without funds produces
+    And the balance and the ledger are unchanged
+
+  Scenario: A second reversal of the same reference is rejected
+    Given a bet already refunded
+    When a second REFUND referencing the same bet arrives
+    Then the response is 422 with failureCode REFERENCE_ALREADY_REVERSED
+    And the balance is credited only once
+
+  Scenario: A rollback of a bet that was already refunded is rejected
+    Given a bet already refunded
+    When a ROLLBACK referencing the same bet arrives
+    Then it is rejected with REFERENCE_ALREADY_REVERSED
+
+  Scenario: A reversal disagreeing with its reference is rejected
+    Given a processed bet of round-987
+    When a REFUND referencing it declares round-988
+    Then the response is 422 with failureCode REFERENCE_MISMATCH
+
+  Scenario: A reversal whose amount differs from the reference is rejected
+    Given a processed BET of 25.00 BRL
+    When a REFUND of 20.00 BRL referencing it arrives
+    Then the response is 422 with failureCode AMOUNT_MISMATCH
+
+  Scenario: A reversal without a reference id is rejected
+    When a REFUND arrives with no referenceExternalTransactionId
+    Then the response is 400 and nothing is persisted
+
+  Scenario: A reversal of a rejected reference is rejected
+    Given a BET rejected for insufficient funds
+    When a REFUND referencing it arrives
+    Then the response is 422 with failureCode REFERENCE_NOT_PROCESSED
+```
+
+#### F6 — `pending_reference_test.go` (etapa 9)
+
+```gherkin
+Feature: Operations waiting for a reference
+  As the platform, I want a reversal that arrives early to wait durably,
+  so that out-of-order delivery costs nothing.
+
+  Scenario: A refund arriving before its bet is held as pending reference
+    Given no bet exists for the referenced external id
+    When the provider posts a REFUND referencing it
+    Then the response is 202 with status PENDING_REFERENCE
+    And WagerTransactionPendingReference is in the outbox
+    And the balance and the ledger are unchanged
+
+  Scenario: The inbox message of a pending reference is completed once the pendency is durable
+    Given a refund delivered over SQS whose reference is missing
+    When the pendency has been committed
+    Then the message is removed from the queue and the cronjob owns the continuation
+
+  Scenario: A pending reference is resolved when its bet finally arrives
+    Given a refund held as PENDING_REFERENCE
+    When the referenced bet is processed
+    And the reference cronjob ticks
+    Then the refund becomes PROCESSED and credits the wallet exactly once
+
+  Scenario: A pending reference expires and is rejected
+    Given a refund held as PENDING_REFERENCE whose TTL has passed
+    When the reference cronjob ticks
+    Then it becomes REJECTED with failureCode REFERENCE_NOT_FOUND
+    And WagerTransactionRejected is in the outbox
+
+  Scenario: A reference that is itself pending keeps the reversal waiting
+    Given the referenced transaction is PENDING_REFERENCE
+    When the reference cronjob ticks
+    Then the reversal stays PENDING_REFERENCE and its attempt counter grows
+
+  Scenario: The retry backoff of a pending reference survives a restart
+    Given a refund held as PENDING_REFERENCE with attempts already recorded
+    When the worker is restarted
+    Then the attempt counter and the next attempt time are the persisted ones
+    And the resolution still happens once the reference arrives
+```
+
+#### F7 — `concurrency_test.go` (etapa 12)
+
+```gherkin
+Feature: Concurrent writers on one wallet
+  As the platform, I want per-wallet coordination without a global lock,
+  so that money stays correct while unrelated wallets keep running in parallel.
+
+  Scenario: Fifty parallel submissions of the same bet produce a single debit
+    Given a wallet with balance 1000.00 BRL
+    When the same bet is submitted fifty times in parallel
+    Then exactly one transaction and one ledger entry exist
+    And the balance is 975.00 BRL
+
+  Scenario: Two competing bets of eighty over one hundred leave twenty
+    Given a wallet with balance 100.00 BRL
+    When two distinct bets of 80.00 BRL are submitted at the same time
+    Then one is PROCESSED and one is REJECTED with INSUFFICIENT_FUNDS
+    And the balance is 20.00 BRL with exactly one DEBIT entry
+    And resubmitting both changes nothing
+
+  Scenario: Distinct wallets are processed in parallel
+    When operations on many distinct wallets are submitted at the same time
+    Then every one of them is processed
+    And no wallet waited on another
+
+  Scenario: The eighty-eighty race holds across three independent instances
+    Given three instances with their own pools and memory
+    When each receives one of two competing bets of 80.00 BRL over 100.00
+    Then the outcome is one processed, one rejected and a balance of 20.00
+
+  Scenario: Concurrent HTTP and SQS submissions of one operation apply it once
+    When the same operation is posted over HTTP and published to the queue at the same time
+    Then exactly one ledger entry exists and both callers see a consistent outcome
+```
+
+#### F8 — `outbox_test.go` (etapa 7)
+
+```gherkin
+Feature: Transactional outbox publication
+  As a downstream consumer, I want every committed event and never an uncommitted one,
+  so that what I read always happened.
+
+  Scenario: An event is published only after its transaction commits
+    Given a bet whose transaction has not committed
+    Then nothing is on the outbound queue
+    When the transaction commits and the publisher ticks
+    Then the event is on the outbound queue and the row is PUBLISHED
+
+  Scenario: An event whose transaction rolled back is never published
+    Given a bet whose transaction failed after writing the outbox row
+    Then neither the row nor the message exists
+
+  Scenario: Two publishers competing over the same outbox publish each event once
+    Given many pending outbox rows
+    When two publishers tick at the same time
+    Then every event is published exactly once and none is skipped
+
+  Scenario: A publisher interrupted between publishing and confirming republishes the same event id
+    Given a publisher killed after SendMessage and before marking the row
+    When another publisher takes the row over
+    Then the event is republished carrying the same eventId
+
+  Scenario: An abandoned lock is reclaimed by another publisher
+    Given a row locked by a publisher that died
+    When the lease expires and another publisher ticks
+    Then the row is published and leaves PENDING
+
+  Scenario: A failed publication is retried with backoff
+    Given the outbound queue is unavailable
+    When the publisher ticks
+    Then the row stays PENDING with a grown attempt count and a later next attempt
+
+  Scenario: The outbox payload is an immutable snapshot
+    Given a WalletBalanceChanged event written for a balance of 975.00
+    When later operations move the balance
+    Then the stored payload still reads 975.00 with the version it had
+```
+
+#### F9 — `recovery_test.go` (etapa 12)
+
+```gherkin
+Feature: Recovery after interruption
+  As an operator, I want a killed process to cost nothing but a retry,
+  so that no restart invents or loses money.
+
+  Scenario: A consumer killed after the commit and before the ack does not apply twice
+    Given a bet consumed and committed
+    When the worker is killed before deleting the message
+    And the message is redelivered to another instance
+    Then the inbox refuses it and no second ledger entry exists
+
+  Scenario: A pending transaction is resumed by another instance
+    Given a transaction committed as PENDING by an instance that then died
+    When another instance sweeps the pending work
+    Then the transaction reaches a terminal state exactly once
+
+  Scenario: A restart preserves idempotency, pendencies and financial consistency
+    Given a mixed workload of processed, rejected and pending-reference operations
+    When every process is restarted
+    Then replays still return the original results
+    And the pendencies still resolve
+    And every wallet balance still equals its ledger sum
+
+  Scenario: SIGTERM stops fetching and finishes the message in flight
+    Given a message being processed
+    When the worker receives SIGTERM
+    Then it stops polling, finishes that message within the deadline and exits cleanly
+```
+
+#### F10 — `authorization_test.go` (etapas 5 e 6)
+
+```gherkin
+Feature: Authentication and provider isolation
+  As the platform, I want identity to decide what a caller may touch,
+  so that a provider can neither move nor read what is not theirs.
+
+  Scenario: A request without a token is rejected and changes nothing
+    When a bet is posted with no Authorization header
+    Then the response is 401 and no transaction, ledger entry or event exists
+
+  Scenario: A request with a forged token is rejected
+    When a bet is posted with a token signed by another key
+    Then the response is 401 and nothing is persisted
+
+  Scenario: A request with an expired token is rejected
+    When a bet is posted with an expired token
+    Then the response is 401 and nothing is persisted
+
+  Scenario: A provider cannot submit an operation for another provider
+    Given a token issued for provider-a
+    When a bet declaring provider-b is posted
+    Then the response is 403 and nothing is persisted
+
+  Scenario: A provider cannot read another provider's transaction
+    Given a transaction belonging to provider-b
+    When provider-a fetches it by id
+    Then the response is 404 and no data about it is exposed
+
+  Scenario: A provider cannot replay another provider's operation
+    Given an operation processed for provider-b
+    When provider-a posts it with the same idempotency key
+    Then the response is 403 and the stored result is not disclosed
+
+  Scenario: Opening a wallet requires the internal service role
+    When a provider token posts /wallets
+    Then the response is 403 and no wallet is created
+
+  Scenario: The health endpoints are reachable without a token
+    When /health/live and /health/ready are requested with no token
+    Then both answer without authentication
+```
+
+#### F11 — `ledger_and_schema_test.go` (etapa 2)
+
+```gherkin
+Feature: Ledger integrity and schema guarantees
+  As an auditor, I want the database itself to refuse a corrupt write,
+  so that a bug in Go cannot produce an unauditable ledger.
+
+  Scenario: A ledger row cannot be updated
+    Given a ledger entry
+    When an UPDATE is issued against it directly in SQL
+    Then the database refuses it and the row is unchanged
+
+  Scenario: A ledger row cannot be deleted
+    When a DELETE is issued against a ledger entry directly in SQL
+    Then the database refuses it and the row is still there
+
+  Scenario: A balance cannot be driven negative through the schema
+    When an UPDATE sets a wallet balance below zero directly in SQL
+    Then the check constraint refuses it
+
+  Scenario: A second ledger entry for the same transaction is refused
+    When two entries are inserted for the same wallet and transaction
+    Then the unique constraint refuses the second
+
+  Scenario: A second opening for the same wallet is refused
+    When a second OPENING is inserted for a wallet
+    Then the partial unique index refuses it
+
+  Scenario: A second successful reversal of one reference is refused
+    When two PROCESSED reversals are inserted for the same reference
+    Then the partial unique index refuses the second
+
+  Scenario: Migrations apply and roll back cleanly
+    When every migration is applied and then rolled back
+    Then the schema returns to its previous state with no error
+```
+
+#### F12 — `queries_test.go` (etapa 10)
+
+```gherkin
+Feature: Reading wallets, ledger and transactions
+  As a provider, I want to follow an operation and page a ledger reliably,
+  so that I can reconcile on my side.
+
+  Scenario: The ledger is paginated by an opaque cursor with stable ordering
+    Given a wallet with more entries than one page
+    When the pages are walked with the returned cursor
+    Then every entry appears exactly once in a stable order
+
+  Scenario: Pagination stays stable while new entries arrive
+    Given a page already fetched
+    When new entries are written and the next page is requested
+    Then no entry from the first page is repeated or skipped
+
+  Scenario: An invalid cursor is rejected
+    When the ledger is requested with a malformed cursor
+    Then the response is 400
+
+  Scenario: A transaction query exposes its pending state and failure code
+    Given one PENDING_REFERENCE and one REJECTED transaction
+    When each is fetched by id
+    Then the status and, for the rejected one, the failureCode are visible
+
+  Scenario: A transaction can be fetched by provider and external id
+    Given a processed operation
+    When it is fetched by provider id and external transaction id
+    Then the same transaction comes back
+```
+
+#### F13 — `reconciliation_test.go` (etapa 10)
+
+```gherkin
+Feature: Wallet reconciliation
+  As an operator, I want the stored balance checked against the ledger without touching it,
+  so that a divergence is found rather than hidden.
+
+  Scenario: Reconciling a consistent wallet reports no difference
+    Given a wallet opened with 1000.00 BRL and one bet of 25.00 BRL
+    When reconciliation is requested
+    Then storedBalance and calculatedBalance are 975.00, difference is 0.00
+    And consistent is true and checkedEntries is 2
+
+  Scenario: Reconciliation reports an injected divergence and changes nothing
+    Given a wallet whose stored balance was tampered with directly in SQL
+    When reconciliation is requested
+    Then consistent is false with the exact difference
+    And the balance is left untouched
+    And the divergence is logged and counted in the metric
+
+  Scenario: Reconciliation is consistent under concurrent movements
+    Given operations running against the wallet
+    When reconciliation is requested
+    Then the two balances come from the same snapshot and never disagree spuriously
+```
+
+#### F14 — `lifecycle_and_health_test.go` (etapa 11)
+
+```gherkin
+Feature: Composition and lifecycle
+  As an operator, I want boot and shutdown to be observable and complete,
+  so that a deploy neither starts broken nor stops halfway.
+
+  Scenario: The fx graph validates for both entrypoints
+    When the server and the worker graphs are validated
+    Then no port is missing an adapter and no constructor runs
+
+  Scenario: The application starts and stops releasing every resource
+    When the application starts and is then stopped
+    Then the pool, the clients and the workers are closed in order with no leak
+
+  Scenario: Readiness fails while Postgres is unavailable
+    Given Postgres is down
+    When /health/ready is requested
+    Then it answers 503 while /health/live still answers 200
+
+  Scenario: Readiness fails while SQS is unavailable
+    Given the queue is unreachable
+    When /health/ready is requested
+    Then it answers 503
+
+  Scenario: Boot fails loudly when the IdP is unreachable
+    Given Keycloak is down
+    When the server starts
+    Then the boot fails after its retries instead of serving unauthenticated traffic
+```
+
+---
+
+---
+
+## 4. O que fica de fora, declarado
+
+O SPEC §15 pede limitações explícitas.
+
+- **Partidas dobradas** — opcional no SPEC; o ledger de uma perna cobre a auditoria pedida.
+- **Reversão parcial** — fora do escopo por definição do SPEC §7.
+- **Multi-moeda em operação** — o tipo carrega a moeda e há teste de incompatibilidade, mas os
+  cenários principais rodam em BRL, como o SPEC permite.
+- **Redis / cache** — retirado do projeto por ora. **Saldo não é cacheado** em nenhum cenário:
+  a única fonte é a linha travada no Postgres, e um cache de saldo transformaria a reconciliação
+  numa medida do cache. Cache de leitura e CDN ficam como TO DO em
+  [ARCHITECTURE.md](ARCHITECTURE.md#22-to-do--cache-de-leitura-e-cdn).
+- **Tracing e teste de carga** — diferenciais. O tracing já existe de graça pelo `Observer`;
+  teste de carga fica fora.
+
+---
+
+## 5. Resultado da implementação
+
+Os 13 passos foram entregues, um commit por passo, todos com a definition of done (§3.1)
+verde: `gofmt`, `go vet`, `golangci-lint` (0 issues, duas vezes), testes unitários com `-race`,
+cobertura de `services/` acima de 80% (≈89%) e a suíte e2e com Postgres, LocalStack e
+Keycloak reais. Nenhum PR foi aberto e nenhum repositório remoto foi criado; o histórico é local.
+
+O que mudou em relação ao plano, e por quê:
+
+| Plano | Entregue | Por quê |
+|---|---|---|
+| 91 cenários | 149 funções de teste e2e, mais os unitários | os cenários do plano viraram mais de um teste quando falhariam por causas diferentes (CLAUDE.md §13); apareceram casos que o plano não previu (trigger de `TRUNCATE`, rejeição por `PLAYER_MISMATCH`, `INTERNAL_ERROR`) |
+| F4 "idempotência sobrevive a restart" e F6 "backoff sobrevive a restart" | um cenário só, em F9, com carga mista | o mesmo restart prova as duas coisas: replay devolve o resultado original e a pendência mantém tentativas, próxima tentativa e expiração |
+| "três processos" independentes | três instâncias no mesmo processo de teste, cada uma com pool, verificador e memória próprios; o SIGTERM usa o **binário do worker** como processo real | um processo de SO por instância custaria minutos de build e boot sem provar nada a mais sobre as travas, que estão no Postgres |
+| Kill do consumidor entre commit e ack | falha injetada no `Ack` (`Faults.FailAcknowledging`) | não há como matar um processo exatamente nesse ponto; a falha injetada deixa o commit feito e a mensagem sem apagar, que é o estado que o kill deixaria |
+| Leituras abertas | leituras de carteira só para `internal_service`; o provedor lê só as transações dele (404 para as de outro) | o SPEC não dá ao provedor acesso ao saldo |
+| `Money` em `structs/` | `Money` em `entities/`; `structs.MoneyDTO` é só o DTO do fio | decisão do autor do repositório durante a implementação |
+| `iso4217` de biblioteca | tabela ISO 4217 embutida em `entities/money.go` | nenhuma biblioteca confiável e mínima o bastante para justificar a dependência |
+
+Limitações que continuam declaradas em §4. Um ponto que não é do código: `HUMAN_SPEC.md` foi
+apagado do disco por outra pessoa durante o trabalho e a remoção ficou fora dos commits.

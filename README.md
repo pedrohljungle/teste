@@ -5,15 +5,14 @@ código (servidor HTTP e worker de fila), **Uber `fx`** para injeção de depend
 vida, **Keycloak** como IDP, **SQS** como fila, **pgx** no Postgres, **Swagger** (swag + Swagger
 UI) na doc de API, **OpenTelemetry** exportando direto (sem coletor) e **`zap`** no log.
 
-O domínio implementado é o de **carteira e apostas de provedores** (`SPEC.md`): abrir carteira,
+O domínio implementado é o de **carteira e apostas de provedores** (o enunciado do desafio; ver [SPEC.md](SPEC.md)): abrir carteira,
 receber `BET`/`WIN`/`LOSS`/`REFUND`/`ROLLBACK` por HTTP ou por fila, manter o saldo e o ledger
 consistentes sob concorrência, publicar eventos por outbox e conciliar saldo contra ledger.
 Dinheiro é `int64` em unidades menores (escala 2), nunca `float`.
 
 | Documento | Para quê |
 |---|---|
-| [SPEC.md](SPEC.md) | o desafio: o que o serviço precisa fazer |
-| [SPEC-claude.md](SPEC-claude.md) | o plano de implementação, a definição de pronto e os cenários e2e em Gherkin |
+| [SPEC.md](SPEC.md) | o plano de implementação, a definição de pronto, os cenários e2e em Gherkin e o resultado; o enunciado do desafio que ele cita como "SPEC §N" não está no repositório (ver o aviso no topo) |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | **por que** cada decisão foi tomada; a lógica de negócio (§2), o modelo de dados (§3) e os fluxos (§4) |
 | [CLAUDE.md](CLAUDE.md) | as regras de como escrever código aqui |
 | [infra/README.md](infra/README.md) | Terraform (VPC, ALB, ECS, RDS, SQS) |
@@ -472,7 +471,7 @@ queda entre publicar e confirmar) e `lifecycle_and_health_test.go` (boot, shutdo
 Postgres ou SQS fora). As falhas são injetadas nas portas por `app/test/e2e/core/faults.go`.
 
 A suíte e2e (`app/test/e2e`) tem uma Feature por arquivo, em Gherkin nos comentários; os cenários
-estão listados em [SPEC-claude.md](SPEC-claude.md). Ela sobe o servidor e o worker no mesmo
+estão listados em [SPEC.md](SPEC.md). Ela sobe o servidor e o worker no mesmo
 processo, mais instâncias independentes quando o cenário exige (corridas entre instâncias,
 publishers concorrentes) e o binário do worker como processo de verdade no cenário de SIGTERM.
 
