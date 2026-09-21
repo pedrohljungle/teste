@@ -729,5 +729,27 @@ O SPEC §15 pede limitações explícitas.
   medida do cache.
 - **Tracing e teste de carga** — diferenciais. O tracing já existe de graça pelo `Observer`;
   teste de carga fica fora.
-- **Renomear `ARCHITECTURE.md` para `ARCHITECTURE.md`** — o SPEC cita o nome correto em cinco
-  seções. É um `git mv` e entra no passo 13.
+
+---
+
+## 5. Resultado da implementação
+
+Os 13 passos foram entregues, um commit por passo, todos com a definition of done (§3.1)
+verde: `gofmt`, `go vet`, `golangci-lint` (0 issues, duas vezes), testes unitários com `-race`,
+cobertura de `services/` acima de 80% (≈89%) e a suíte e2e com Postgres, Redis, LocalStack e
+Keycloak reais. Nenhum PR foi aberto e nenhum repositório remoto foi criado; o histórico é local.
+
+O que mudou em relação ao plano, e por quê:
+
+| Plano | Entregue | Por quê |
+|---|---|---|
+| 91 cenários | 149 funções de teste e2e, mais os unitários | os cenários do plano viraram mais de um teste quando falhariam por causas diferentes (CLAUDE.md §13); apareceram casos que o plano não previu (trigger de `TRUNCATE`, rejeição por `PLAYER_MISMATCH`, `INTERNAL_ERROR`) |
+| F4 "idempotência sobrevive a restart" e F6 "backoff sobrevive a restart" | um cenário só, em F9, com carga mista | o mesmo restart prova as duas coisas: replay devolve o resultado original e a pendência mantém tentativas, próxima tentativa e expiração |
+| "três processos" independentes | três instâncias no mesmo processo de teste, cada uma com pool, verificador e memória próprios; o SIGTERM usa o **binário do worker** como processo real | um processo de SO por instância custaria minutos de build e boot sem provar nada a mais sobre as travas, que estão no Postgres |
+| Kill do consumidor entre commit e ack | falha injetada no `Ack` (`Faults.FailAcknowledging`) | não há como matar um processo exatamente nesse ponto; a falha injetada deixa o commit feito e a mensagem sem apagar, que é o estado que o kill deixaria |
+| Leituras abertas | leituras de carteira só para `internal_service`; o provedor lê só as transações dele (404 para as de outro) | o SPEC não dá ao provedor acesso ao saldo |
+| `Money` em `structs/` | `Money` em `entities/`; `structs.MoneyDTO` é só o DTO do fio | decisão do autor do repositório durante a implementação |
+| `iso4217` de biblioteca | tabela ISO 4217 embutida em `entities/money.go` | nenhuma biblioteca confiável e mínima o bastante para justificar a dependência |
+
+Limitações que continuam declaradas em §4. Um ponto que não é do código: `HUMAN_SPEC.md` foi
+apagado do disco por outra pessoa durante o trabalho e a remoção ficou fora dos commits.

@@ -118,7 +118,7 @@ func TestAPendingTransactionIsResumedByAnotherInstance(t *testing.T) {
 //	Given a mixed workload of processed, rejected and pending-reference operations
 //	When every process is restarted
 //	Then replays still return the original results
-//	And the pendency is still there and still resolves
+//	And the pendency is still there with its attempts and next attempt, and still resolves
 //	And every wallet balance still equals its ledger sum
 func TestARestartPreservesIdempotencyPendenciesAndFinancialConsistency(t *testing.T) {
 	w := newWallet(t, "100.00")
@@ -132,6 +132,11 @@ func TestARestartPreservesIdempotencyPendenciesAndFinancialConsistency(t *testin
 	pending := core.Decode[transactionResponse](t, core.KeepStatus(t, submit(t, refund), http.StatusAccepted))
 	holdExpiryFar(t, refund.ExternalTransactionID)
 	before := walletState(t, w.ID)
+	// Let the resolver look at it a few times, so there is a retry state worth preserving.
+	waitUntil(t, "the resolver to look at the pendency", func() bool {
+		return pendingState(t, refund.ExternalTransactionID).attempts >= 2
+	})
+	attemptsBefore := pendingState(t, refund.ExternalTransactionID).attempts
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
@@ -150,8 +155,9 @@ func TestARestartPreservesIdempotencyPendenciesAndFinancialConsistency(t *testin
 	if after := walletState(t, w.ID); after != before {
 		t.Fatalf("replaying after the restart changed the wallet: before %+v, after %+v", before, after)
 	}
-	if row := pendingState(t, refund.ExternalTransactionID); row.status != "PENDING_REFERENCE" || row.expiresAt == nil {
-		t.Fatalf("the pendency did not survive the restart: %+v", row)
+	if row := pendingState(t, refund.ExternalTransactionID); row.status != "PENDING_REFERENCE" || row.expiresAt == nil ||
+		row.nextAttempt == nil || row.attempts < attemptsBefore {
+		t.Fatalf("the pendency did not survive the restart with its retry state (%d attempts before): %+v", attemptsBefore, row)
 	}
 	if again := core.Decode[transactionResponse](t, core.KeepStatus(t, submit(t, refund), http.StatusAccepted)); again.TransactionID != pending.TransactionID {
 		t.Fatalf("the pending refund is another transaction after the restart: %+v", again)

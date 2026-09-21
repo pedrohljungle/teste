@@ -1737,22 +1737,28 @@ Sobe **Postgres, Redis, LocalStack (SQS) e Keycloak de verdade**, aplica as migr
 servidor e o worker no mesmo processo. Nada é dublê: é a única camada de teste que exerce os
 adapters, a validação de assinatura do JWT, o SQL real e o ciclo de vida de uma mensagem.
 
-O que ela valida hoje:
+O que ela valida (uma Feature por arquivo, listadas em [SPEC-claude.md](SPEC-claude.md)):
 
-| Fluxo | O que estaria quebrado se o teste caísse |
+| Feature | O que estaria quebrado se o teste caísse |
 |---|---|
-| mensagem tratada sem erro some da fila | o `Ack`; a fila nunca drenaria |
-| mensagem cujo handler falha volta e é entregue de novo | o contrato de retry; trabalho perdido em silêncio |
-| mensagem que falha e depois passa acaba apagada | o ciclo nunca terminaria, e tudo acabaria na DLQ |
-| token ausente, token forjado, `/health` aberto | a borda de autenticação |
-| `/me` | o mapeamento de claims do realm para `Principal` |
-| a doc descreve as rotas servidas, com a `tokenUrl` alcançável | rota sem anotação, e o Authorize quebrado fora da rede |
+| abertura de carteira, `BET`/`WIN`/`LOSS`, `REFUND`/`ROLLBACK` | a regra de negócio e o saldo |
+| idempotência (HTTP, SQS, entre os dois) | dinheiro movido duas vezes |
+| esquema e ledger (triggers, unicidade, `balance >= 0`) | as garantias que só o banco dá |
+| `UnitOfWork` (commit, rollback, panic, aninhamento, snapshot) | atomicidade |
+| outbox (N publishers, lease, backoff, crash entre publicar e confirmar) | evento perdido ou duplicado sem que o consumidor consiga distinguir |
+| consumidor SQS (inbox, DLQ, retry, ack) | o contrato de entrega da fila, contra o SQS de verdade |
+| referência pendente e o cronjob que a resolve | reversão que chega antes da aposta |
+| leituras, cursor, reconciliação | paginação instável, saldo divergente sem alarme |
+| concorrência (50 iguais, 80+80 sobre 100, instâncias independentes, HTTP × SQS) | corrida no lock da carteira |
+| recuperação (kill antes do ack, retomada por outra instância, restart, SIGTERM) | um restart que inventa ou perde dinheiro |
+| observabilidade e saúde (métricas, logs, `ready` 503, boot sem IdP) | painel vazio no dia em que ele é preciso |
+| autenticação, papéis, doc da API | a borda |
 
-A primeira metade é o contrato da fila **contra o SQS de verdade**, não contra um dublê: a
-parte que pode estar errada é a chamada de `DeleteMessage` e o *visibility timeout*, e nenhuma
-das duas seria exercida por um fake. Quando houver domínio, o fluxo dele entra aqui.
+O contrato da fila é testado **contra o SQS de verdade**, não contra um dublê: a parte que pode
+estar errada é a chamada de `DeleteMessage` e o *visibility timeout*, e nenhuma das duas seria
+exercida por um fake.
 
-Quatro decisões dessa suíte:
+Cinco decisões dessa suíte:
 
 - **Build tag `e2e`.** `make test` continua rápido e sem Docker; quem quer a suíte pede por
   ela. Suíte lenta misturada com a rápida é suíte que as pessoas param de rodar. Em troca,
@@ -1760,7 +1766,13 @@ Quatro decisões dessa suíte:
 - **Servidor e worker no mesmo processo.** Em produção são binários separados, mas eles se
   compõem dos mesmos módulos e registram pelas mesmas funções `ServerRoutes`/`PrepareWorker`
   que o teste chama — então o que é exercido é o registro real. O que fica de fora é só o
-  ciclo de vida de cada `main`.
+  ciclo de vida de cada `main`. Quando o cenário é sobre várias instâncias (corrida entre
+  três servidores, publishers concorrentes) o `core` sobe **instâncias independentes**, cada uma
+  com pool, verificador e memória próprios; o cenário de `SIGTERM` roda o **binário do worker**
+  como processo de verdade, numa fila só dele, para que nenhum outro consumidor leve a mensagem.
+  Falhas que não dá para provocar de fora (broker recusando um evento, kill entre o commit e o
+  ack, dependência fora do ar no `ready`) são injetadas **nas portas** (`core/faults.go`), e tudo
+  abaixo delas é o código real.
 - **A máquina mora em `app/test/e2e/core/`.** Containers, migração, boot do `fx` e helpers de
   HTTP, banco e fila ficam num subpacote; os arquivos de teste não sobem nada. Um teste que
   gasta trinta linhas montando `fx` antes de afirmar qualquer coisa é um teste que ninguém lê —

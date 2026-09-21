@@ -5,13 +5,16 @@ código (servidor HTTP e worker de fila), **Uber `fx`** para injeção de depend
 vida, **Keycloak** como IDP, **SQS** como fila, **pgx** no Postgres, **Swagger** (swag + Swagger
 UI) na doc de API, **OpenTelemetry** exportando direto (sem coletor) e **`zap`** no log.
 
-> **Não há domínio aqui.** `interfaces/`, `services/` e as pastas de domínio das outras camadas
-> estão vazias de propósito: o que existe é a estrutura, a infraestrutura e as duas rotas que
-> qualquer serviço tem (`/health` e `/me`). O primeiro domínio é de quem for usar isto.
+O domínio implementado é o de **carteira e apostas de provedores** (`SPEC.md`): abrir carteira,
+receber `BET`/`WIN`/`LOSS`/`REFUND`/`ROLLBACK` por HTTP ou por fila, manter o saldo e o ledger
+consistentes sob concorrência, publicar eventos por outbox e conciliar saldo contra ledger.
+Dinheiro é `int64` em unidades menores (escala 2), nunca `float`.
 
 | Documento | Para quê |
 |---|---|
-| [ARCHITECTURE.md](ARCHITECTURE.md) | **por que** cada decisão foi tomada, e o que foi descartado |
+| [SPEC.md](SPEC.md) | o desafio: o que o serviço precisa fazer |
+| [SPEC-claude.md](SPEC-claude.md) | o plano de implementação, a definição de pronto e os cenários e2e em Gherkin |
+| [ARCHITECTURE.md](ARCHITECTURE.md) | **por que** cada decisão foi tomada; a lógica de negócio (§2), o modelo de dados (§3) e os fluxos (§4) |
 | [CLAUDE.md](CLAUDE.md) | as regras de como escrever código aqui |
 | [infra/README.md](infra/README.md) | Terraform (VPC, ALB, ECS, RDS, Redis, SQS) |
 
@@ -36,6 +39,8 @@ UI) na doc de API, **OpenTelemetry** exportando direto (sem coletor) e **`zap`**
                     ┌──────┴──────────────────────┴───────────────┐
                     │   worker            :3010 (probe)           │
                     │   jobrunner ─▶ handlers ─▶ services ─▶ repos │
+                    │   cronjob   ─▶ outbox (publica eventos)      │
+                    │             ─▶ referências pendentes         │
                     └─────────────────────────────────────────────┘
 
                     ambos exportam OTLP ──▶ Grafana (Tempo · Prometheus)
@@ -63,8 +68,9 @@ repositórios e services. O que muda é o que cada `main` monta.
 | Dado | `repositories/<dom>.PostgresRepository` | o mesmo |
 | Identidade | valida o JWT de quem chamou | service account (`client_credentials`) |
 
-Cada domínio expõe `ServerRoutes` e `PrepareWorker`; as `main` chamam o que cada processo
-precisa. Detalhes em [ARCHITECTURE §4](ARCHITECTURE.md#7-um-source-code-dois-entrypoints).
+Cada domínio expõe `ServerRoutes`, `PrepareWorker` (mensagem de fila) e `PrepareCronjob` (tarefa
+periódica); as `main` chamam o que cada processo precisa. No vocabulário daqui, **worker** é o
+processo, **job** é uma mensagem do SQS e **cronjob** é um tick periódico (`libs/cronjob`). Detalhes em [ARCHITECTURE §4](ARCHITECTURE.md#7-um-source-code-dois-entrypoints).
 
 ---
 
@@ -82,7 +88,7 @@ O compose sobe, nesta ordem: `postgres`, `redis`, `localstack` (SQS), `keycloak`
 |---|---|
 | Server | <http://localhost:3000> |
 | **Doc da API** | <http://localhost:3000/docs> |
-| Probe do worker | <http://localhost:3010/health> |
+| Probe do worker | <http://localhost:3010/health/live> · `/health/ready` |
 | Grafana | <http://localhost:3001> |
 | Keycloak | <http://localhost:8080> (`admin` / `admin`) |
 | LocalStack (SQS) | <http://localhost:4566> |
@@ -120,26 +126,61 @@ Se preferir o terminal, `make token` imprime um access token e os `curl` abaixo 
 
 ### Exercitando
 
-```bash
-TOKEN=$(make -s token)
+Dois papéis, dois clients do realm (`client_credentials`): o serviço interno abre e consulta
+carteiras (`internal_service`); o provedor envia operações (`provider`). O `providerId` do corpo
+tem que ser o do token (`provider_id`), senão é 403.
 
-curl -s localhost:3000/health
-curl -s localhost:3000/me -H "Authorization: Bearer $TOKEN"
-curl -s -o /dev/null -w '%{http_code}\n' localhost:3000/me     # 401 sem token
+```bash
+KC=http://localhost:8080/realms/pedro-test/protocol/openid-connect/token
+token() { curl -s -X POST $KC -d grant_type=client_credentials -d client_id=$1 -d client_secret=$2 | jq -r .access_token; }
+
+INTERNAL=$(token pedro-test-wallet-service wallet-service-secret-local)
+PROVIDER=$(token provider-a provider-a-secret-local)
+PLAYER_ID=$(uuidgen | tr A-Z a-z)
+
+# abre a carteira (201). O saldo inicial vira uma transação OPENING e uma linha de ledger.
+WALLET_ID=$(curl -s localhost:3000/wallets -H "Authorization: Bearer $INTERNAL" \
+  -H 'Content-Type: application/json' \
+  -d '{"playerId":"'$PLAYER_ID'","initialBalance":{"amount":"1000.00","currency":"BRL"}}' | jq -r .id)
+
+# uma aposta (200). Repetir a mesma chamada devolve o resultado guardado, com idempotentReplay: true.
+BET='{"providerId":"provider-a","externalTransactionId":"bet-1","playerId":"'$PLAYER_ID'",
+      "walletId":"'$WALLET_ID'","roundId":"round-1","gameId":"fortune-chimp","kind":"BET",
+      "money":{"amount":"25.00","currency":"BRL"}}'
+curl -s localhost:3000/wagering/transactions -H "Authorization: Bearer $PROVIDER" \
+  -H 'Content-Type: application/json' -H 'Idempotency-Key: provider-a:bet-1' -d "$BET"
+
+# um REFUND que chega antes da aposta fica PENDING_REFERENCE (202) e se resolve quando ela chega.
+curl -s localhost:3000/wallets/$WALLET_ID -H "Authorization: Bearer $INTERNAL"
+curl -s "localhost:3000/wallets/$WALLET_ID/ledger?limit=50" -H "Authorization: Bearer $INTERNAL"
+curl -s -X POST localhost:3000/wallets/$WALLET_ID/reconciliation -H "Authorization: Bearer $INTERNAL"
 ```
 
-| Método | Rota | Exige |
-|---|---|---|
-| `GET` | `/health` | nada (o probe não tem token) |
-| `GET` | `/docs`, `/swagger/*` | nada — e só existem com `DOCS_ENABLED` |
-| `GET` | `/me` | Bearer JWT |
+| Método | Rota | Quem | O que faz |
+|---|---|---|---|
+| `POST` | `/wallets` | `internal_service` | abre a carteira (uma por jogador e moeda; 409 se já existe) |
+| `GET` | `/wallets/{id}` | `internal_service` | saldo e versão |
+| `GET` | `/wallets/{id}/ledger` | `internal_service` | ledger paginado por cursor opaco (`limit` ≤ 200, padrão 50) |
+| `POST` | `/wallets/{id}/reconciliation` | `internal_service` | compara o saldo guardado com a soma do ledger, sem alterar nada |
+| `POST` | `/wagering/transactions` | `provider` | envia uma operação; exige `Idempotency-Key` |
+| `GET` | `/wagering/transactions/{id}` | `provider` | lê uma transação própria |
+| `GET` | `/providers/{providerId}/wagering/transactions/{externalId}` | `provider` | lê pelo id do provedor |
+| `GET` | `/health`, `/health/live`, `/health/ready` | ninguém | probes; `ready` checa Postgres e SQS e devolve 503 nomeando o que falhou |
+| `GET` | `/docs`, `/swagger/*` | ninguém | só existem com `DOCS_ENABLED` |
+| `GET` | `/me` | Bearer JWT | quem o realm diz que você é |
 
-Falha responde sempre a mesma forma (`{"message": "..."}`): **400** entrada inválida, **401**
-sem token, **403** sem papel.
+Falha responde sempre a mesma forma (`{"message": "...", "failureCode": "..."}`): **400** entrada
+inválida, **401** sem token, **403** papel ou provedor errado, **404** não existe (ou é de outro
+provedor), **409** conflito de idempotência, **422** regra de negócio (`INSUFFICIENT_FUNDS`,
+`CURRENCY_MISMATCH`, `REFERENCE_ALREADY_REVERSED`...), **202** referência pendente.
 
 ### Exercitando a fila
 
-A fila de operações é FIFO. Publique direto no SQS do LocalStack e veja o worker consumir. O
+As filas são FIFO e criadas por `docker/localstack/init-queues.sh` (a aplicação nunca cria infra):
+`wager-transactions.fifo` (entrada, consumida pelo worker), `wager-transactions-dlq.fifo` e
+`wager-events.fifo` (saída: o publisher do outbox envia os eventos `WagerTransactionProcessed`,
+`WagerTransactionRejected`, `WalletBalanceChanged` e `WagerTransactionPendingReference`, com
+`MessageGroupId` = agregado e `MessageDeduplicationId` = id do evento). Publique direto no SQS do LocalStack e veja o worker consumir. O
 `MessageGroupId` é a carteira (as operações de uma carteira são consumidas uma de cada vez, em
 ordem) e o `MessageDeduplicationId` é a chave de idempotência:
 
@@ -240,6 +281,12 @@ Rótulos disponíveis: `app_layer` (`handler`, `service`, `repository`, `gateway
 > A métrica aparece no próximo ciclo de exportação — `OTEL_METRIC_EXPORT_INTERVAL`, 15s no
 > compose e 60s por padrão. Se a consulta vier vazia logo após subir, é só isso.
 
+Além das métricas por camada, o domínio emite as suas (`wager_transactions_total{kind,status,failure_code}`,
+`wager_idempotent_replays_total`, `inbox_duplicates_total`, `outbox_publish_attempts_total`,
+`sqs_dead_letters_total`, `reconciliation_divergences_total`...). A lista completa, com tags, está
+em [ARCHITECTURE §2.9](ARCHITECTURE.md#29-observabilidade-do-domínio). Todo log de operação carrega
+`correlationId`, `walletId`, `providerId` e `transactionId`, e nunca valores monetários nem tokens.
+
 ### Sem abrir o navegador
 
 O Grafana expõe os datasources por proxy, então dá para ler tudo com `curl`:
@@ -287,6 +334,7 @@ make help    # lista tudo
 
 | Comando | O que faz |
 |---|---|
+| `make verify` | **a definição de pronto inteira**: `gofmt`, `go vet`, `lint`, `test`, `coverage` e `test-e2e` |
 | `make test` | unitários (services + lógica em `entities`/`structs`), com race detector |
 | `make coverage` | cobertura de `services/`, falha abaixo de 80% |
 | `make lint` | `golangci-lint` — é ele que cobra as regras de camada |
@@ -313,6 +361,20 @@ make help    # lista tudo
 | `make migrate-down` | desfaz a última |
 | `make migrate-status` | mostra o que está aplicado |
 
+### Variáveis de ambiente
+
+Todas estão comentadas em [`.env.example`](.env.example). As que importam para este domínio:
+
+| Variável | Para quê |
+|---|---|
+| `DATABASE_URL` | Postgres (o schema vem do goose; a aplicação não migra) |
+| `KEYCLOAK_ISSUER` · `KEYCLOAK_INTERNAL_URL` · `KEYCLOAK_AUDIENCE` | endereço externo (claim `iss`) e interno do realm |
+| `SQS_QUEUE_URL` · `SQS_DLQ_URL` · `SQS_EVENTS_QUEUE_URL` | entrada, dead letter e eventos de saída |
+| `WORKER_POLL_TIMEOUT` · `WORKER_VISIBILITY_TIMEOUT` · `WORKER_CONCURRENCY` | consumo da fila |
+| `OUTBOX_POLL_INTERVAL` · `OUTBOX_BATCH_SIZE` · `OUTBOX_LEASE` · `OUTBOX_BACKOFF_*` | publisher do outbox (nunca desiste de um evento) |
+| `REFERENCE_TTL` · `REFERENCE_MAX_ATTEMPTS` · `REFERENCE_BACKOFF_*` · `REFERENCE_POLL_INTERVAL` | espera de REFUND/ROLLBACK cuja referência ainda não chegou |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | vazio desliga o export (é o que os testes fazem) |
+
 ### Fora do Docker
 
 Com Postgres, Redis, LocalStack e Keycloak no ar:
@@ -320,9 +382,23 @@ Com Postgres, Redis, LocalStack e Keycloak no ar:
 ```bash
 cp .env.example .env
 go install github.com/pressly/goose/v3/cmd/goose@v3.28.0
-make migrate-up
-make run-server   # noutro terminal: make run-worker
+make migrate-up      # make migrate-down desfaz a última
+make run-server      # noutro terminal: make run-worker
 ```
+
+### Testes
+
+```bash
+make test        # unitários, sem Docker: services, entities e structs, com -race
+make coverage    # piso de 80% em services/ (hoje ~89%)
+make test-e2e    # precisa de Docker: Postgres, Redis, LocalStack e Keycloak em containers
+make verify      # tudo acima mais gofmt, go vet e lint
+```
+
+A suíte e2e (`app/test/e2e`) tem uma Feature por arquivo, em Gherkin nos comentários; os cenários
+estão listados em [SPEC-claude.md](SPEC-claude.md). Ela sobe o servidor e o worker no mesmo
+processo, mais instâncias independentes quando o cenário exige (corridas entre instâncias,
+publishers concorrentes) e o binário do worker como processo de verdade no cenário de SIGTERM.
 
 ---
 
@@ -337,7 +413,7 @@ app/
 │   ├── services/<dom>/     regra de negócio
 │   ├── repositories/<dom>/ adapters de I/O (pgx, Redis, SQS)
 │   ├── entities/ structs/  domínio e o que atravessa camadas
-│   └── libs/               config, observabilidade, middleware, auth, runtime da fila
+│   └── libs/               config, observabilidade, middleware, auth, db (UnitOfWork), runtime da fila (jobrunner) e dos cronjobs
 └── test/e2e/               testcontainers: fluxos de ponta a ponta
 docker/                     Dockerfile dos apps e do goose, realm, init do LocalStack
 infra/                      Terraform (sandbox e prod)
